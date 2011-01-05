@@ -40,8 +40,8 @@ z(?:w(?:,(?:[\-\w]+(?:,)))|m(?:,(?:[\-\w]+(?:,)))|a(?:,(?:[\-\w]+(?:,))))
 REDUCE_PATTERN = re.compile(TASP_RE.replace('\n',''), re.IGNORECASE)
 
 URI_SPLITTER = re.compile(
-    "^(\\w+://)(?:([-\\w\\.!~\\*'\\(\\)%;:&=+$,]+?)(@))?)"
-    "(?:((?:\\d{1,3}\\.){3}\\d{1,3})|(\\S+?))(:\\d+)?(/\\S*)?$"
+    r"^(\w+://)(?:([-\w\.!~\*'\(\)%;:&=+$,]+?)(@))?"
+    r"(?:((?:\d{1,3}\.){3}\d{1,3})|(\S+?))(:\d+)?(/\S*)?$"
     )
 
 def surt_form(s, preserveCase=False):
@@ -61,13 +61,18 @@ def surt_form(s, preserveCase=False):
         # other hostname match: do reverse
         b.append(','.join(reversed(m.group(5).split('.'))) + ',')
     # port
-    b.append(m.group(6))
+    if m.group(6):
+        b.append(m.group(6))
     # at
-    b.append(m.group(3))
+    if m.group(3):
+        b.append(m.group(3))
     # userinfo
-    b.append(m.group(2))
+    if m.group(2):
+        b.append(m.group(2))
     b.append(')')
-    b.append(m.group(7))
+    # path
+    if m.group(7):
+        b.append(m.group(7))
     if not preserveCase:
         return ''.join(b).lower()
     else:
@@ -96,20 +101,28 @@ def map(curi, bucketCount):
 # test
 if __name__ == '__main__':
     assert surt_form('http://www.archive.org') == 'http://(org,archive,www,)'
+    print "1 - OK"
     assert surt_form('http://www.archive.org/movies/movies.php') == \
         'http://(org,archive,www,)/movies/movies.php'
+    print "2 - OK"
     assert surt_form('http://www.archive.org:8080/movies/movies.php') == \
-        'http://(org.archive.www,:8080)/movies/movies.php'
+        'http://(org,archive,www,:8080)/movies/movies.php'
+    print "3 - OK"
     assert surt_form('http://user:pass@www.archive.org/movies/movies.php') == \
         'http://(org,archive,www,@user:pass)/movies/movies.php'
+    print "4 - OK"
     assert surt_form('http://user:pass@www.archive.org:8080/movies/movies.php') == \
         'http://(org,archive,www,:8080@user:pass)/movies/movies.php'
+    print "5 - OK"
     assert surt_form("http://www.archive.org/movies/movies.php#top") == \
         "http://(org,archive,www,)/movies/movies.php#top"
-
+    print "6 - OK"
+    
     assert surt_form("http://www.example.com/foo@bar") == \
         "http://(com,example,www,)/foo@bar"
+    print "7 - OK"
 
     assert surt_form("http://127.2.34.5/foo") == \
         "http://(127.2.34.5)/foo"
+    print "8 - OK"
                      
