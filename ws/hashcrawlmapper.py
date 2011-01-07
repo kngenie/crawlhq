@@ -1,7 +1,7 @@
 #!/usr/bin/python
 #
 import re
-import publicsuffixes
+import fpgenerator
 
 # simply include resultant regular expression,
 # rather than reimplementing PublicSuffixes in Python.
@@ -61,12 +61,16 @@ def surt_authority(surt):
     else:
         return surt[indexOfOpen+4:indexOfClose]
     
-def map(curi, bucketCount):
+def fingerprint(curi):
+    '''compute fingerprint for curi. curi is an URL in regular format'''
     key = core_key(curi)
     m = REDUCE_PATTERN.search(key)
     if m:
         key = m.group(0)
-    fp = fpgenerator.std64.fp(key)
+    return fpgenerator.std64.fp(key)
+    
+def map(curi, bucketCount):
+    fp = fingerprint(curi)
     bucket = fp % bucketCount
     return str(abs(bucket))
                                
