@@ -16,7 +16,9 @@ def surtPrefixRegexFromPublishedFile(file):
     generates regular expression for matching SURT-prefixes. While
     implementation takes different approach than original Java version
     (org.archive.net.PublicSuffixes), generated regular expression shall
-    be fully compatible.'''
+    be fully compatible, except for support of unknown TLD. In current
+    version returned regular expression does not include pattern for
+    matching unknown TLD.'''
 
     def fix(seg):
         # current list has a stray '?' in a .no domain
@@ -52,6 +54,9 @@ def surtPrefixRegexFromPublishedFile(file):
             while True:
                 if p[0] == 'alt':
                     # scanning across branches
+                    # TODO: sort branches in a skip-list way for efficiency.
+                    # then replace '*' and '' with something naturally
+                    # placed in the right position.
                     if i >= len(p):
                         # new branch
                         p.append([c])
@@ -63,9 +68,10 @@ def surtPrefixRegexFromPublishedFile(file):
                         p = p[i]
                         i = 1
                         break
-                    elif p[i][0] == '*':
-                        # keep wildcard at the end. wildcard pattern must come
-                        # after look-ahead pattern for exclusions, or look-ahead
+                    elif p[i][0] == u'*' and c != u'' or p[i][0] == u'':
+                        # keep wildcard and end-marker at the end.
+                        # wildcard pattern must come after look-ahead pattern
+                        # for exclusions (but before end-marker), or look-ahead
                         # would have no effect. this could be merged with the
                         # first case above, if we can assume there never be
                         # multiple lines of the identical wildcard pattern.
@@ -89,16 +95,12 @@ def surtPrefixRegexFromPublishedFile(file):
                         else:
                             # need new branching point
                             br1 = p[i:]
-                            br2 = [c]
-                            # keep wildcard at the end
-                            if br1[0] == '*':
-                                p[i:] = (['alt', br2, br1],)
-                            else:
-                                p[i:] = (['alt', br1, br2],)
-                            p = br2
-                            assert type(p) == list
+                            p[i:] = (['alt', br1],)
+                            # branch for c will be added in 'alt' case above
+                            # a bit waste of CPU cycle, but it keeps special
+                            # handling of '*' and '' in one place
+                            p = p[i]
                             i = 1
-                            break
                     else:
                         # branch point - find a branch for c, or create anew
                         assert type(p[i]) == list, str(p)
@@ -126,7 +128,6 @@ def surtPrefixRegexFromPublishedFile(file):
             sep1 = '|'
         for b in alt[1:]:
             out.append(sep)
-            wc = False
             for c in b:
                 if type(c) == unicode:
                     if c != '':
@@ -147,10 +148,11 @@ def surtPrefixRegexFromPublishedFile(file):
 
     out = []
     dump_re(out, tree)
-    return ''.join(out)
+    return ''.join(out) + r'(?:[-\w]+,)'
     
 if __name__ == '__main__':
     input = None
     if len(sys.argv) > 1:
         input = sys.argv[1]
+    # print Python unicode string, with \u notation for non-ascii range.
     print repr(getTopmostAssignedSurtPrefixRegex(input))#.encode('utf-8')
