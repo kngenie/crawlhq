@@ -70,9 +70,14 @@ def fingerprint(curi):
     return fpgenerator.std64.fp(key)
     
 def map(curi, bucketCount):
+    '''note this function returns int, rather than string'''
     fp = fingerprint(curi)
+    # for compatibility with Java version (while Java's mod gives negative
+    # for negative dividend, Python returns positive): H3 takes abs of mod
+    if fp >= (1 << 63):
+        fp = (1 << 64) - fp
     bucket = fp % bucketCount
-    return str(abs(bucket))
+    return bucket
                                
 # test
 if __name__ == '__main__':
