@@ -123,14 +123,17 @@ class Headquarters:
             result = db.command('findAndModify', 'jobs.%s' % job,
                                 query=query,
                                 update={'$set': {'co': time.time()}},
-                                upsert=False)
-            # TODO: check result.ok
-            o = result['value']
-            if o is None:
+                                upsert=False,
+                                allowable_errors=['No matching object found'])
+            if result['ok'] != 0:
+                o = result['value']
+                #if o is None:
+                #    break
+                del o['_id']
+                if 'c' in o: del o['c']
+                r.append(o)
+            else:
                 break
-            del o['_id']
-            if 'c' in o: del o['c']
-            r.append(o)
         web.header('content-type', 'text/json')
         # this separators arg makes generated JSON more compact. it's usually
         # a tuple, but 2-length string works here.
