@@ -27,12 +27,15 @@ db = mongo.crawl
 
 class Headquarters:
     def GET(self, job, action):
-        return '<html><body>job=%s, action=%s</body></html>' % (job, action)
+        if action == 'feed':
+            return self.POST(job, action)
+        else:
+            return '<html><body>job=%s, action=%s</body></html>' % (job, action)
 
     def POST(self, job, action):
         a = 'do_' + action
         if hasattr(self, a):
-            (getattr(self, a))(job)
+            return (getattr(self, a))(job)
         else:
             raise web.notfound('hoge')
 
@@ -95,19 +98,19 @@ class Headquarters:
         if crawl_now(curi):
             fp = fingerprint(uri)
             # compatibility with H3
-            if fp >= (1<<63):
-                fp = (1<<64) - fp
+            #if fp >= (1<<63):
+            #    fp = (1<<64) - fp
             # TODO: context
             curi.update(path=path, via=via, fp=fp)
+            del curi['c']
             self.schedule(job, curi)
 
     def do_feed(self, job):
         p = web.input(n=5, name=0, nodes=1)
         name = int(p.name)
         nodes = int(p.nodes)
-        count = p.n
+        count = int(p.n)
 
-        hashmap = 'this.fp % %d == %d' % (nodes, name)
         # return an JSON array of objects with properties:
         # uri, path, via, context and data
         q = db.jobs[job]
@@ -116,8 +119,9 @@ class Headquarters:
             #o = q.find_and_modify({'co':None, '$where': hashmap},
             #                      update={'$set':{'co': time.time()}},
             #                      upsert=False)
+            query = {'co':None, 'fp':{'$mod':[nodes, name]}}
             result = db.command('findAndModify', 'jobs.%s' % job,
-                                query={'co': None, '$where': hashmap},
+                                query=query,
                                 update={'$set': {'co': time.time()}},
                                 upsert=False)
             # TODO: check result.ok
@@ -125,9 +129,12 @@ class Headquarters:
             if o is None:
                 break
             del o['_id']
+            if 'c' in o: del o['c']
             r.append(o)
         web.header('content-type', 'text/json')
-        return json.dumps(r, check_circular=False, separators=(',',':'))
+        # this separators arg makes generated JSON more compact. it's usually
+        # a tuple, but 2-length string works here.
+        return json.dumps(r, check_circular=False, separators=',:') + "\n"
              
 def lref(name):
     path = web.ctx.environ['SCRIPT_FILENAME']
