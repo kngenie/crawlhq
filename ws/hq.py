@@ -2,16 +2,23 @@
 #
 # Headquarters server for crawling cloud control
 #
-import web
 import sys
+# actually adding this directory to sys.path is not recommended
+LIB='/var/www/crawling/hq'
+if sys.path[-1] != LIB:
+    sys.path.append(LIB)
+import web
+from web.utils import Storage, storify
 import pymongo
 import json
 import time
-import hashcrawlmapper
+from mako.template import Template
+from mako.lookup import TemplateLookup
+from hashcrawlmapper import fingerprint
 
 urls = (
+    '/?', 'Status',
     '/jobs/(.*)/(.*)', 'Headquarters',
-    '/status', 'Status',
     )
 app = web.application(urls, globals())
 
@@ -23,10 +30,11 @@ class Headquarters:
         return '<html><body>job=%s, action=%s</body></html>' % (job, action)
 
     def POST(self, job, action):
-        if hasattr(self, 'do_' . action):
-            self[action](self, job)
+        a = 'do_' + action
+        if hasattr(self, a):
+            (getattr(self, a))(job)
         else:
-            raise web.notfound()
+            raise web.notfound('hoge')
 
     def schedule(self, job, curi):
         db.jobs[job].save(curi)
@@ -71,28 +79,49 @@ class Headquarters:
         # the same URI being submitted concurrently from being scheduled
         # as well. with new=True, find_and_modify() returns updated
         # (newly created) object.
-        curi = db.seen.find_and_modify({'uri':uri},
-                                       update={'$set':{'uri':uri},
-                                               '$inc':{'c':1}},
-                                       upsert=True, new=True)
+        #curi = db.seen.find_and_modify({'uri':uri},
+        #                               update={'$set':{'uri':uri},
+        #                                       '$inc':{'c':1}},
+        #                               upsert=True, new=True)
+        # mthod find_and_modify is available only in 1.10+
+        result = db.command('findAndModify', 'seen',
+                            query={'uri': uri},
+                            update={'$set': {'uri': uri},
+                                    '$inc': {'c': 1}},
+                            upsert=True,
+                            new=True)
+        # TODO: check result.ok
+        curi = result['value']
         if crawl_now(curi):
-            curi.path = path
-            curi.via = via
-            self.schedule(curi)
+            fp = fingerprint(uri)
+            # compatibility with H3
+            if fp >= (1<<63):
+                fp = (1<<64) - fp
+            # TODO: context
+            curi.update(path=path, via=via, fp=fp)
+            self.schedule(job, curi)
 
     def do_feed(self, job):
-        p = web.input(n=5, name=0)
+        p = web.input(n=5, name=0, nodes=1)
         name = int(p.name)
+        nodes = int(p.nodes)
         count = p.n
 
-        # TODO: return an JSON array of objects with properties:
+        hashmap = 'this.fp % %d == %d' % (nodes, name)
+        # return an JSON array of objects with properties:
         # uri, path, via, context and data
         q = db.jobs[job]
         r = []
         for i in xrange(count):
-            o = q.find_and_modify({'co':None, 'node':name},
-                                  update={'$set':{'co': time.time()}},
-                                  upsert=False)
+            #o = q.find_and_modify({'co':None, '$where': hashmap},
+            #                      update={'$set':{'co': time.time()}},
+            #                      upsert=False)
+            result = db.command('findAndModify', 'jobs.%s' % job,
+                                query={'co': None, '$where': hashmap},
+                                update={'$set': {'co': time.time()}},
+                                upsert=False)
+            # TODO: check result.ok
+            o = result['value']
             if o is None:
                 break
             del o['_id']
@@ -100,17 +129,38 @@ class Headquarters:
         web.header('content-type', 'text/json')
         return json.dumps(r, check_circular=False, separators=(',',':'))
              
+def lref(name):
+    path = web.ctx.environ['SCRIPT_FILENAME']
+    p = path.rfind('/')
+    if p != -1:
+        return path[:p+1] + name
+    else:
+        return '/' + name
 class Status:
+    '''implements control web user interface for crawl headquarters'''
+    def __init__(self):
+        self.templates = TemplateLookup(directories=[lref('t')])
+
+    def render(self, tmpl, **kw):
+        t = self.templates.get_template(tmpl)
+        return t.render(**kw)
+
     def GET(self):
-        coll = db.jobs
-        jobs = coll.getCollectionNames()
-        html = '<html><body>'
-        for job in jobs:
-            html .= '<div>' . job . '</div>'
-        html .= '</body></html>'
+        jobs = [storify(j) for j in db.jobconfs.find()]
+        for j in jobs:
+            qc = db.jobs[j.name].count()
+            j.queue = Storage(count=qc)
+
+        seenCount =db.seen.count()
+
+        return self.render('status.html',
+                    jobs=jobs,
+                    seen=Storage(count=seenCount))
 
         return html
 
 if __name__ == "__main__":
     app.run()
+else:
+    application = app.wsgifunc()
 
