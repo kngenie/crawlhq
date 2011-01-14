@@ -73,10 +73,11 @@ class Headquarters:
             return curi['c'] == 1 or \
                 curi.pop('expire', sys.maxint) < time.time()
         
-        p = web.input(path='', via=None)
+        p = web.input(path='', via=None, context=None)
         uri = p.uri
         path = p.path
         via = p.via
+        context = p.context
 
         # check with seed list - use of find_and_modify prevents
         # the same URI being submitted concurrently from being scheduled
@@ -97,11 +98,11 @@ class Headquarters:
         curi = result['value']
         if crawl_now(curi):
             fp = fingerprint(uri)
-            # compatibility with H3
-            #if fp >= (1<<63):
-            #    fp = (1<<64) - fp
-            # TODO: context
-            curi.update(path=path, via=via, fp=fp)
+            # Mongodb supports up to 64-bit *signed* int. This is also
+            # compatible with H3's HashCrawlMapper.
+            if fp >= (1<<63):
+                fp = (1<<64) - fp
+            curi.update(path=path, via=via, context=context, fp=fp)
             del curi['c']
             self.schedule(job, curi)
 
