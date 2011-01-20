@@ -69,16 +69,25 @@ class Headquarters:
         do_discovered runs already-seen test and then schedule a URL
         for crawling with last-modified and content-hash obtained
         from seen database (if previously crawled)'''
-        def crawl_now(curi):
-            return curi['c'] == 1 or \
-                curi.pop('expire', sys.maxint) < time.time()
         
         p = web.input(path='', via=None, context=None)
-        uri = p.uri
-        path = p.path
-        via = p.via
-        context = p.context
+        #uri = p.uri
+        #path = p.path
+        #via = p.via
+        #context = p.context
 
+        result = dict(processed=0, scheduled=0)
+        if self.schedule_unseen(job, **p):
+            result.update(scheduled=1)
+        result.update(processed=1)
+        return json.dumps(result, check_circular=False, separators=',:')
+
+    def crawl_now(self, curi):
+        return curi['c'] == 1 or \
+            curi.get('expire', sys.maxint) < time.time()
+
+    def schedule_unseen(self, job,
+                        uri, path=None, via=None, context=None, **rest):
         # check with seed list - use of find_and_modify prevents
         # the same URI being submitted concurrently from being scheduled
         # as well. with new=True, find_and_modify() returns updated
@@ -96,7 +105,7 @@ class Headquarters:
                             new=True)
         # TODO: check result.ok
         curi = result['value']
-        if crawl_now(curi):
+        if self.crawl_now(curi):
             fp = fingerprint(uri)
             # Mongodb supports up to 64-bit *signed* int. This is also
             # compatible with H3's HashCrawlMapper.
@@ -104,8 +113,28 @@ class Headquarters:
                 fp = (1<<64) - fp
             curi.update(path=path, via=via, context=context, fp=fp)
             del curi['c']
+            curi.pop('expire', None)
             self.schedule(job, curi)
+            return True
+        return False
 
+    def do_mdiscovered(self, job):
+        '''same as do_discovered, but can receive multiple URLs at once.'''
+        result = dict(processed=0, scheduled=0)
+        p = web.input(u='')
+        if p.u == '':
+            return json.dumps(result)
+        curis = json.loads(p.u)
+        if isinstance(curis, list):
+            for curi in curis:
+                result['processed'] += 1
+                if self.schedule_unseen(job,
+                                        curi['uri'], path=curi.get('path'),
+                                        via=curi.get('via'),
+                                        context=curi.get('context')):
+                    result['scheduled'] += 1
+        return json.dumps(result, check_circular=False, separators=',:') + "\n"
+                
     def do_feed(self, job):
         p = web.input(n=5, name=0, nodes=1)
         name = int(p.name)
