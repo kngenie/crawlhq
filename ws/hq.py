@@ -106,7 +106,11 @@ class Headquarters:
         # TODO: check result.ok
         curi = result['value']
         if self.crawl_now(curi):
-            fp = fingerprint(uri)
+            try:
+                fp = fingerprint(uri)
+            except Exception, ex:
+                print >>sys.stderr, "fingerprint(%s) failed: " % uri, ex
+                return False
             # Mongodb supports up to 64-bit *signed* int. This is also
             # compatible with H3's HashCrawlMapper.
             if fp >= (1<<63):
