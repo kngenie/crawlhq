@@ -12,12 +12,14 @@ from web.utils import Storage, storify
 import pymongo
 import json
 import time
+import re
 from mako.template import Template
 from mako.lookup import TemplateLookup
 from hashcrawlmapper import fingerprint
 
 urls = (
     '/?', 'Status',
+    '/q/(.*)', 'Query',
     '/jobs/(.*)/(.*)', 'Headquarters',
     )
 app = web.application(urls, globals())
@@ -27,7 +29,7 @@ db = mongo.crawl
 
 class Headquarters:
     def GET(self, job, action):
-        if action == 'feed':
+        if action == 'feed' or action == 'ofeed':
             return self.POST(job, action)
         else:
             return '<html><body>job=%s, action=%s</body></html>' % (job, action)
@@ -42,6 +44,25 @@ class Headquarters:
     def schedule(self, job, curi):
         db.jobs[job].save(curi)
 
+    def do_mfinished(self, job):
+        '''process finished event in a batch'''
+        result = dict(processed=0)
+        payload = web.data()
+        curis = json.loads(payload)
+        finished = time.time()
+        # seen status expires after 2 months
+        expire = finished + 60 * 24 * 3600
+        for curi in curis:
+            uri = curi['uri']
+            db.seen.update({'uri': uri},
+                           {'$set': {'data': curi['data'],
+                                     'finished': finished,
+                                     'expire': expire}},
+                           upsert=True)
+            db.jobs[job].remove({'uri': uri})
+            result['processed'] += 1
+        return json.dumps(result, check_circular=False, separators=',:')
+
     def do_finished(self, job):
         p = web.input(data='{}')
         uri = p.uri
@@ -54,6 +75,7 @@ class Headquarters:
         # TODO: allow custom expiration per job
         expire = finished + 60 * 24 * 3600
         # important: keep 'c' value (see do_discovered below)
+        updatestart = time.time()
         db.seen.update({'uri':uri}, {'$set':{'data':data,
                                              'finished':finished,
                                              'expire':expire}},
@@ -62,7 +84,11 @@ class Headquarters:
         # 2. remove curi from scheduled URIs collection
         # should we get _id from seen collection for use in remove()?
         # (it's more efficient)
+        removestart = time.time()
         db.jobs[job].remove({'uri':uri})
+        print >>sys.stderr, \
+            "finished: seen.update in %f, jobs.%s.remove in %f" \
+            % ((removestart - updatestart), job, (time.time() - removestart))
         
     def do_discovered(self, job):
         '''receives URLs found as 'outlinks' in just downloaded page.
@@ -96,13 +122,15 @@ class Headquarters:
         #                               update={'$set':{'uri':uri},
         #                                       '$inc':{'c':1}},
         #                               upsert=True, new=True)
-        # mthod find_and_modify is available only in 1.10+
+        # method find_and_modify is available only in 1.10+
+        seentime = time.time()
         result = db.command('findAndModify', 'seen',
                             query={'uri': uri},
                             update={'$set': {'uri': uri},
                                     '$inc': {'c': 1}},
                             upsert=True,
                             new=True)
+        seentime = time.time() - seentime
         # TODO: check result.ok
         curi = result['value']
         if self.crawl_now(curi):
@@ -118,17 +146,30 @@ class Headquarters:
             curi.update(path=path, via=via, context=context, fp=fp)
             del curi['c']
             curi.pop('expire', None)
+            scheduletime = time.time()
             self.schedule(job, curi)
+            scheduletime = time.time() - scheduletime
+            print >>sys.stderr, "schedule_unseen seen=%f, schedule=%f" % \
+                (seentime, scheduletime)
             return True
+        print >>sys.stderr, "schedule_unseen seen=%f, no schedule" % \
+            seentime
         return False
 
     def do_mdiscovered(self, job):
         '''same as do_discovered, but can receive multiple URLs at once.'''
         result = dict(processed=0, scheduled=0)
         p = web.input(u='')
-        if p.u == '':
-            return json.dumps(result)
-        curis = json.loads(p.u)
+        data = p.u
+        if data == '':
+            data = web.data()
+            
+        try:
+            curis = json.loads(data)
+        except:
+            web.debug("json.loads error:data=%s" % data)
+            raise
+        start = time.time()
         if isinstance(curis, list):
             for curi in curis:
                 result['processed'] += 1
@@ -137,9 +178,11 @@ class Headquarters:
                                         via=curi.get('via'),
                                         context=curi.get('context')):
                     result['scheduled'] += 1
+        print >>sys.stderr, "mdiscovered %s in %fs" % \
+            (result, (time.time() - start))
         return json.dumps(result, check_circular=False, separators=',:') + "\n"
                 
-    def do_feed(self, job):
+    def do_ofeed(self, job):
         p = web.input(n=5, name=0, nodes=1)
         name = int(p.name)
         nodes = int(p.nodes)
@@ -172,6 +215,44 @@ class Headquarters:
         # this separators arg makes generated JSON more compact. it's usually
         # a tuple, but 2-length string works here.
         return json.dumps(r, check_circular=False, separators=',:') + "\n"
+
+    def do_feed(self, job):
+        p = web.input(n=5, name=0, nodes=1)
+        name = int(p.name)
+        nodes = int(p.nodes)
+        count = int(p.n)
+
+        # return an JSON array of objects with properties:
+        # uri, path, via, context and data
+        #q = db.jobs[job]
+        #r = []
+        # find and save - faster
+        feedfunc1 = 'function(j,i,n,c){var t=Date.now();' \
+            'var a=db.jobs[j].find({co:null,fp:{$mod:[n,i]}},' \
+            '{uri:1,via:1,path:1,context:1}).limit(c).toArray();' \
+            'a.forEach(function(u){' \
+            'u.co=t;db.jobs[i].save(u);delete u._id});' \
+            'return a;}'
+        # findAndModify and loop - slower
+        feedfunc2 = 'function(j,i,n,c){var t=Date.now(), a=[];' \
+            'while(c-- > 0){' \
+            'r=db.jobs[j].findAndModify({' \
+            'query:{co:null,fp:{$mod:[n,i]}},' \
+            'update:{$set:{co:t}},' \
+            'fields:{uri:1,via:1,path:1,context:1},' \
+            'upsert:false});' \
+            'if(r){delete r._id;a.push(r);}else{break;}' \
+            '}return a;}'
+
+        r = db.eval(feedfunc1, job, name, nodes, count)
+        web.header('content-type', 'text/json')
+        # this separators arg makes generated JSON more compact. it's usually
+        # a tuple, but 2-length string works here.
+        return json.dumps(r, check_circular=False, separators=',:') + "\n"
+
+    def do_test(self, job):
+        web.debug(web.data())
+        return str(web.ctx.env)
              
 def lref(name):
     path = web.ctx.environ['SCRIPT_FILENAME']
@@ -180,6 +261,7 @@ def lref(name):
         return path[:p+1] + name
     else:
         return '/' + name
+
 class Status:
     '''implements control web user interface for crawl headquarters'''
     def __init__(self):
@@ -203,8 +285,29 @@ class Status:
 
         return html
 
+class Query:
+    def __init__(self):
+        pass
+    def GET(self, c):
+        if re.match(r'[^a-z]', c):
+            raise web.notfound('c')
+        if not hasattr(self, 'do_' + c):
+            raise web.notfound('c')
+        return getattr(self, 'do_' + c)()
+
+    def do_searchseen(self):
+        p = web.input(q='')
+        if p.q == '':
+            return '[]'
+        q = re.sub(r'"', '\\"', p.q)
+        r = []
+        for d in db.seen.find({'$where':'this.uri.match("%s")' % q}).limit(10):
+            del d['_id']
+            r.append(d)
+
+        return json.dumps(r)
+    
 if __name__ == "__main__":
     app.run()
 else:
     application = app.wsgifunc()
-
