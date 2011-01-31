@@ -149,11 +149,11 @@ class Headquarters:
             scheduletime = time.time()
             self.schedule(job, curi)
             scheduletime = time.time() - scheduletime
-            print >>sys.stderr, "schedule_unseen seen=%f, schedule=%f" % \
-                (seentime, scheduletime)
+            #print >>sys.stderr, "schedule_unseen seen=%f, schedule=%f" % \
+            #    (seentime, scheduletime)
             return True
-        print >>sys.stderr, "schedule_unseen seen=%f, no schedule" % \
-            seentime
+        #print >>sys.stderr, "schedule_unseen seen=%f, no schedule" % \
+        #    seentime
         return False
 
     def do_mdiscovered(self, job):
@@ -231,7 +231,7 @@ class Headquarters:
             'var a=db.jobs[j].find({co:null,fp:{$mod:[n,i]}},' \
             '{uri:1,via:1,path:1,context:1}).limit(c).toArray();' \
             'a.forEach(function(u){' \
-            'u.co=t;db.jobs[i].save(u);delete u._id});' \
+            'u.co=t;db.jobs[j].save(u);delete u._id});' \
             'return a;}'
         # findAndModify and loop - slower
         feedfunc2 = 'function(j,i,n,c){var t=Date.now(), a=[];' \
