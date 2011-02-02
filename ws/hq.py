@@ -29,7 +29,7 @@ db = mongo.crawl
 
 class Headquarters:
     def GET(self, job, action):
-        if action == 'feed' or action == 'ofeed':
+        if action in ('feed', 'ofeed', 'reset', 'processinq'):
             return self.POST(job, action)
         else:
             return '<html><body>job=%s, action=%s</body></html>' % (job, action)
@@ -41,6 +41,10 @@ class Headquarters:
         else:
             raise web.notfound('hoge')
 
+    def jsonres(self, r):
+        web.header('content-type', 'text/json')
+        return json.dumps(r, check_circular=False, separators=',:') + "\n"
+    
     def schedule(self, job, curi):
         db.jobs[job].save(curi)
 
@@ -61,7 +65,7 @@ class Headquarters:
                            upsert=True)
             db.jobs[job].remove({'uri': uri})
             result['processed'] += 1
-        return json.dumps(result, check_circular=False, separators=',:')
+        return self.jsonres(result)
 
     def do_finished(self, job):
         p = web.input(data='{}')
@@ -106,7 +110,7 @@ class Headquarters:
         if self.schedule_unseen(job, **p):
             result.update(scheduled=1)
         result.update(processed=1)
-        return json.dumps(result, check_circular=False, separators=',:')
+        return self.jsonres(result)
 
     def crawl_now(self, curi):
         return curi['c'] == 1 or \
@@ -134,15 +138,18 @@ class Headquarters:
         # TODO: check result.ok
         curi = result['value']
         if self.crawl_now(curi):
-            try:
-                fp = fingerprint(uri)
-            except Exception, ex:
-                print >>sys.stderr, "fingerprint(%s) failed: " % uri, ex
-                return False
-            # Mongodb supports up to 64-bit *signed* int. This is also
-            # compatible with H3's HashCrawlMapper.
-            if fp >= (1<<63):
-                fp = (1<<64) - fp
+            fp = curi.get('fp')
+            if fp is None:
+                try:
+                    fp = fingerprint(uri)
+                except Exception, ex:
+                    print >>sys.stderr, "fingerprint(%s) failed: " % uri, ex
+                    return False
+                # Mongodb supports up to 64-bit *signed* int. This is also
+                # compatible with H3's HashCrawlMapper.
+                if fp >= (1<<63):
+                    fp = (1<<64) - fp
+                db.seen.update({'_id':curi['_id']},{'$set':{'fp':fp}})
             curi.update(path=path, via=via, context=context, fp=fp)
             del curi['c']
             curi.pop('expire', None)
@@ -157,6 +164,73 @@ class Headquarters:
         return False
 
     def do_mdiscovered(self, job):
+        result = dict(processed=0)
+        try:
+            data = web.data()
+            curis = json.loads(data)
+        except:
+            web.debug("json.loads error:data=%s" % data)
+            return self.jsonres(result)
+
+        start = time.time()
+        db.inq[job].save(dict(d=curis))
+        #print >>sys.stderr, "mdiscovered %s in %fs" % \
+        #    (result, (time.time() - start))
+        result.update(processed=len(curis), t=(time.time() - start))
+        return self.jsonres(result)
+
+    def do_processinq(self, job):
+        p = web.input(max=5000)
+        maxn = int(p.max)
+        result = dict(inq=0, processed=0, scheduled=0, max=maxn)
+        start = time.time()
+        while maxn > 0:
+            r = db.command('findAndModify', 'inq.%s' % job,
+                           remove=True,
+                           allowable_errors=['No matching object found'])
+            if r['ok'] != 0:
+                result['inq'] += 1
+                e = r['value']
+                if 'd' in e:
+                    # discovered
+                    for curi in e['d']:
+                        result['processed'] += 1
+                        if self.schedule_unseen(job,
+                                                curi['uri'],
+                                                path=curi.get('path'),
+                                                via=curi.get('via'),
+                                                context=curi.get('context')):
+                            result['scheduled'] += 1
+            else:
+                break
+            maxn -= 1
+        result.update(t=(time.time() - start))
+        return self.jsonres(result)
+
+    def do_processinq2(self, job):
+        p = web.input(max=5000)
+        maxn = int(p.max)
+        result = dict(inq=0, processed=0, scheduled=0, max=maxn)
+        start = time.time()
+        cur = db.inq[job].find()
+        if maxn > 0:
+            cur = cur.limit(maxn)
+        for e in cur:
+            result['inq'] += 1
+            if 'd' in e:
+                # discovered
+                for curi in e['d']:
+                    result['processed'] += 1
+                    if self.schedule_unseen(job,
+                                            curi['uri'], path=curi.get('path'),
+                                            via=curi.get('via'),
+                                            context=curi.get('context')):
+                        result['scheduled'] += 1
+            db.inq[job].remove(e['_id'])
+        result.update(t=(time.time() - start))
+        return self.jsonres(result)
+
+    def do_mdiscovered2(self, job):
         '''same as do_discovered, but can receive multiple URLs at once.'''
         result = dict(processed=0, scheduled=0)
         p = web.input(u='')
@@ -180,7 +254,7 @@ class Headquarters:
                     result['scheduled'] += 1
         print >>sys.stderr, "mdiscovered %s in %fs" % \
             (result, (time.time() - start))
-        return json.dumps(result, check_circular=False, separators=',:') + "\n"
+        return self.jsonres(result)
                 
     def do_ofeed(self, job):
         p = web.input(n=5, name=0, nodes=1)
@@ -214,7 +288,7 @@ class Headquarters:
         web.header('content-type', 'text/json')
         # this separators arg makes generated JSON more compact. it's usually
         # a tuple, but 2-length string works here.
-        return json.dumps(r, check_circular=False, separators=',:') + "\n"
+        return self.jsonres(r)
 
     def do_feed(self, job):
         p = web.input(n=5, name=0, nodes=1)
@@ -248,7 +322,24 @@ class Headquarters:
         web.header('content-type', 'text/json')
         # this separators arg makes generated JSON more compact. it's usually
         # a tuple, but 2-length string works here.
-        return json.dumps(r, check_circular=False, separators=',:') + "\n"
+        return self.jsonres(r)
+
+    def do_reset(self, job):
+        '''resets URIs' check-out state, make them schedulable to crawler'''
+        p = web.input(name=None, nodes=None)
+        name = int(p.name)
+        nodes = int(p.nodes)
+        r = dict(name=name, nodes=nodes)
+        if name is None or nodes is None:
+            r.update(msg='name and nodes are required')
+            return self.jsonres(r)
+        e = db.jobs[job].update({'co':{'$gt': 0}, 'fp':{'$mod':[nodes, name]}},
+                                {'$unset':{'co':1}},
+                                multi=True, safe=True)
+        r.update(e=e)
+        print >>sys.stderr, "reset %s" % str(r)
+        # TODO: return number of URIs reset
+        return self.jsonres(r)
 
     def do_test(self, job):
         web.debug(web.data())
@@ -275,7 +366,9 @@ class Status:
         jobs = [storify(j) for j in db.jobconfs.find()]
         for j in jobs:
             qc = db.jobs[j.name].count()
-            j.queue = Storage(count=qc)
+            coqc = db.jobs[j.name].find({'co':{'$gt':0}}).count()
+            inqc = db.inq[j.name].count()
+            j.queue = Storage(count=qc, cocount=coqc, inqcount=inqc)
 
         seenCount =db.seen.count()
 
