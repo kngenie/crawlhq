@@ -48,6 +48,17 @@ class Headquarters:
     def schedule(self, job, curi):
         db.jobs[job].save(curi)
 
+    def update_seen(self, uri, data, finished, expire=None):
+        if expire is None:
+            # seen status expires after 2 months
+            # TODO: allow custom expiration per job/domain/URI
+            expire = finished + 60 * 24 * 3600
+        db.seen.update({'u': uri},
+                       {'$set': {'a': curi['a'],
+                                 'f': finished,
+                                 'e': expire}},
+                       upsert=True)
+            
     def do_mfinished(self, job):
         '''process finished event in a batch'''
         result = dict(processed=0)
@@ -57,21 +68,17 @@ class Headquarters:
         # seen status expires after 2 months
         expire = finished + 60 * 24 * 3600
         for curi in curis:
-            uri = curi['uri']
-            db.seen.update({'uri': uri},
-                           {'$set': {'data': curi['data'],
-                                     'finished': finished,
-                                     'expire': expire}},
-                           upsert=True)
-            db.jobs[job].remove({'uri': uri})
+            uri = curi['u']
+            self.update_seen(uri, curi['a'], finished)
+            db.jobs[job].remove({'u': uri})
             result['processed'] += 1
         return self.jsonres(result)
 
     def do_finished(self, job):
-        p = web.input(data='{}')
-        uri = p.uri
+        p = web.input(a='{}')
+        uri = p.u
         # data: JSON with properties: content-digest, etag, last-modified
-        data = json.loads(p.data)
+        data = json.loads(p.a)
 
         # 1. update seen record
         finished = time.time()
@@ -80,16 +87,13 @@ class Headquarters:
         expire = finished + 60 * 24 * 3600
         # important: keep 'c' value (see do_discovered below)
         updatestart = time.time()
-        db.seen.update({'uri':uri}, {'$set':{'data':data,
-                                             'finished':finished,
-                                             'expire':expire}},
-                       upsert=True)
+        self.update_seen(uri, data, finished)
 
         # 2. remove curi from scheduled URIs collection
         # should we get _id from seen collection for use in remove()?
         # (it's more efficient)
         removestart = time.time()
-        db.jobs[job].remove({'uri':uri})
+        db.jobs[job].remove({'u':uri})
         print >>sys.stderr, \
             "finished: seen.update in %f, jobs.%s.remove in %f" \
             % ((removestart - updatestart), job, (time.time() - removestart))
@@ -100,21 +104,17 @@ class Headquarters:
         for crawling with last-modified and content-hash obtained
         from seen database (if previously crawled)'''
         
-        p = web.input(path='', via=None, context=None)
-        #uri = p.uri
-        #path = p.path
-        #via = p.via
-        #context = p.context
+        p = web.input(p='', v=None, x=None)
 
         result = dict(processed=0, scheduled=0)
-        if self.schedule_unseen(job, **p):
+        if self.schedule_unseen(job, p.u, path=p.p, via=p.v, context=p.x):
             result.update(scheduled=1)
         result.update(processed=1)
         return self.jsonres(result)
 
     def crawl_now(self, curi):
         return curi['c'] == 1 or \
-            curi.get('expire', sys.maxint) < time.time()
+            curi.get('e', sys.maxint) < time.time()
 
     def schedule_unseen(self, job,
                         uri, path=None, via=None, context=None, **rest):
@@ -129,8 +129,8 @@ class Headquarters:
         # method find_and_modify is available only in 1.10+
         seentime = time.time()
         result = db.command('findAndModify', 'seen',
-                            query={'uri': uri},
-                            update={'$set': {'uri': uri},
+                            query={'u': uri},
+                            update={'$set': {'u': uri},
                                     '$inc': {'c': 1}},
                             upsert=True,
                             new=True)
@@ -152,7 +152,7 @@ class Headquarters:
                 db.seen.update({'_id':curi['_id']},{'$set':{'fp':fp}})
             curi.update(path=path, via=via, context=context, fp=fp)
             del curi['c']
-            curi.pop('expire', None)
+            curi.pop('e', None)
             scheduletime = time.time()
             self.schedule(job, curi)
             scheduletime = time.time() - scheduletime
@@ -195,11 +195,16 @@ class Headquarters:
                     # discovered
                     for curi in e['d']:
                         result['processed'] += 1
+                        # transitional support
+                        if 'uri' in curi: curi['u'] = curi.pop('uri')
+                        if 'path' in curi: curi['p'] = curi.pop('path')
+                        if 'via' in curi: curi['v'] = curi.pop('via')
+                        if 'context' in curi: curi['x'] = curi.pop('context')
                         if self.schedule_unseen(job,
-                                                curi['uri'],
-                                                path=curi.get('path'),
-                                                via=curi.get('via'),
-                                                context=curi.get('context')):
+                                                curi['u'],
+                                                path=curi.get('p'),
+                                                via=curi.get('v'),
+                                                context=curi.get('x')):
                             result['scheduled'] += 1
             else:
                 break
@@ -222,9 +227,9 @@ class Headquarters:
                 for curi in e['d']:
                     result['processed'] += 1
                     if self.schedule_unseen(job,
-                                            curi['uri'], path=curi.get('path'),
-                                            via=curi.get('via'),
-                                            context=curi.get('context')):
+                                            curi['u'], path=curi.get('p'),
+                                            via=curi.get('v'),
+                                            context=curi.get('x')):
                         result['scheduled'] += 1
             db.inq[job].remove(e['_id'])
         result.update(t=(time.time() - start))
@@ -248,9 +253,9 @@ class Headquarters:
             for curi in curis:
                 result['processed'] += 1
                 if self.schedule_unseen(job,
-                                        curi['uri'], path=curi.get('path'),
-                                        via=curi.get('via'),
-                                        context=curi.get('context')):
+                                        curi['u'], path=curi.get('p'),
+                                        via=curi.get('v'),
+                                        context=curi.get('x')):
                     result['scheduled'] += 1
         print >>sys.stderr, "mdiscovered %s in %fs" % \
             (result, (time.time() - start))
@@ -313,7 +318,7 @@ class Headquarters:
             'r=db.jobs[j].findAndModify({' \
             'query:{co:null,fp:{$mod:[n,i]}},' \
             'update:{$set:{co:t}},' \
-            'fields:{uri:1,via:1,path:1,context:1},' \
+            'fields:{u:1,v:1,p:1,x:1},' \
             'upsert:false});' \
             'if(r){delete r._id;a.push(r);}else{break;}' \
             '}return a;}'
@@ -394,7 +399,7 @@ class Query:
             return '[]'
         q = re.sub(r'"', '\\"', p.q)
         r = []
-        for d in db.seen.find({'$where':'this.uri.match("%s")' % q}).limit(10):
+        for d in db.seen.find({'$where':'this.u.match("%s")' % q}).limit(10):
             del d['_id']
             r.append(d)
 
