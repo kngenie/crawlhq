@@ -16,6 +16,7 @@ import re
 from mako.template import Template
 from mako.lookup import TemplateLookup
 from hashcrawlmapper import fingerprint
+import threading
 
 urls = (
     '/?', 'Status',
@@ -53,39 +54,47 @@ class Headquarters:
             # seen status expires after 2 months
             # TODO: allow custom expiration per job/domain/URI
             expire = finished + 60 * 24 * 3600
+        # important: keep 'c' value (see do_discovered below)
         db.seen.update({'u': uri},
-                       {'$set': {'a': curi['a'],
+                       {'$set': {'a': data,
                                  'f': finished,
                                  'e': expire}},
                        upsert=True)
             
     def do_mfinished(self, job):
-        '''process finished event in a batch'''
+        '''process finished event in a batch. array of finished crawl URIs
+           in the body. each crawl URI is an object with following properties:
+           u: URL,
+           f: finished time (optional; current time will be used if omitted),
+           a: an object with response information:
+              m: last-modified as Unix timestamp,
+              d: content-digest,
+              s: HTTP status code,
+              (additional properties are allowed - HQ does not check)'''
         result = dict(processed=0)
         payload = web.data()
         curis = json.loads(payload)
-        finished = time.time()
-        # seen status expires after 2 months
-        expire = finished + 60 * 24 * 3600
+        now = time.time()
         for curi in curis:
             uri = curi['u']
+            finished = curi.get('f', now)
+            #print >>sys.stderr, "mfinished uri=", uri
             self.update_seen(uri, curi['a'], finished)
             db.jobs[job].remove({'u': uri})
             result['processed'] += 1
+        result.update(t=(time.time() - now))
+        print >>sys.stderr, "mfinished ", result
         return self.jsonres(result)
 
     def do_finished(self, job):
-        p = web.input(a='{}')
+        p = web.input(a='{}', f=time.time())
         uri = p.u
         # data: JSON with properties: content-digest, etag, last-modified
         data = json.loads(p.a)
+        finished = p.f
 
+        result = dict(processed=0)
         # 1. update seen record
-        finished = time.time()
-        # seen status expires after 2 months.
-        # TODO: allow custom expiration per job
-        expire = finished + 60 * 24 * 3600
-        # important: keep 'c' value (see do_discovered below)
         updatestart = time.time()
         self.update_seen(uri, data, finished)
 
@@ -94,9 +103,13 @@ class Headquarters:
         # (it's more efficient)
         removestart = time.time()
         db.jobs[job].remove({'u':uri})
-        print >>sys.stderr, \
-            "finished: seen.update in %f, jobs.%s.remove in %f" \
-            % ((removestart - updatestart), job, (time.time() - removestart))
+        result['processed'] += 1
+        now = time.time()
+        result.update(t=(now - updatestart()),
+                      tu=(removestart - updatestart),
+                      tr=(now - removestart))
+        print >>sys.stderr, "finished", result
+        return self.jsonres(result)
         
     def do_discovered(self, job):
         '''receives URLs found as 'outlinks' in just downloaded page.
@@ -150,7 +163,7 @@ class Headquarters:
                 if fp >= (1<<63):
                     fp = (1<<64) - fp
                 db.seen.update({'_id':curi['_id']},{'$set':{'fp':fp}})
-            curi.update(path=path, via=via, context=context, fp=fp)
+            curi.update(p=path, v=via, x=context, fp=fp)
             del curi['c']
             curi.pop('e', None)
             scheduletime = time.time()
@@ -179,36 +192,55 @@ class Headquarters:
         result.update(processed=len(curis), t=(time.time() - start))
         return self.jsonres(result)
 
+    def processinq(self, job, queue, result):
+        try:
+            for d in queue():
+                for curi in d:
+                    result['processed'] += 1
+                    # transitional support
+                    if 'uri' in curi: curi['u'] = curi.pop('uri')
+                    if 'path' in curi: curi['p'] = curi.pop('path')
+                    if 'via' in curi: curi['v'] = curi.pop('via')
+                    if 'context' in curi: curi['x'] = curi.pop('context')
+                    if self.schedule_unseen(job,
+                                            curi['u'],
+                                            path=curi.get('p'),
+                                            via=curi.get('v'),
+                                            context=curi.get('x')):
+                        result['scheduled'] += 1
+        except Exception as ex:
+            print >>sys.stderr, ex
+            
     def do_processinq(self, job):
         p = web.input(max=5000)
         maxn = int(p.max)
         result = dict(inq=0, processed=0, scheduled=0, max=maxn)
         start = time.time()
-        while maxn > 0:
-            r = db.command('findAndModify', 'inq.%s' % job,
-                           remove=True,
-                           allowable_errors=['No matching object found'])
-            if r['ok'] != 0:
+
+        def getinq():
+            while result['inq'] < maxn:
+                r = db.command('findAndModify', 'inq.%s' % job,
+                               remove=True,
+                               allowable_errors=['No matching object found'])
+                if r['ok'] == 0:
+                    break
+
                 result['inq'] += 1
                 e = r['value']
                 if 'd' in e:
                     # discovered
-                    for curi in e['d']:
-                        result['processed'] += 1
-                        # transitional support
-                        if 'uri' in curi: curi['u'] = curi.pop('uri')
-                        if 'path' in curi: curi['p'] = curi.pop('path')
-                        if 'via' in curi: curi['v'] = curi.pop('via')
-                        if 'context' in curi: curi['x'] = curi.pop('context')
-                        if self.schedule_unseen(job,
-                                                curi['u'],
-                                                path=curi.get('p'),
-                                                via=curi.get('v'),
-                                                context=curi.get('x')):
-                            result['scheduled'] += 1
-            else:
-                break
-            maxn -= 1
+                    yield e['d']
+
+        if True:
+            th1 = threading.Thread(target=self.processinq, args=(job, getinq, result))
+            th2 = threading.Thread(target=self.processinq, args=(job, getinq, result))
+            th1.start()
+            th2.start()
+            th1.join()
+            th2.join()
+        else:
+            self.processinq(job, getinq, result)
+
         result.update(t=(time.time() - start))
         return self.jsonres(result)
 
@@ -308,7 +340,7 @@ class Headquarters:
         # find and save - faster
         feedfunc1 = 'function(j,i,n,c){var t=Date.now();' \
             'var a=db.jobs[j].find({co:null,fp:{$mod:[n,i]}},' \
-            '{uri:1,via:1,path:1,context:1}).limit(c).toArray();' \
+            '{u:1,v:1,p:1,x:1}).limit(c).toArray();' \
             'a.forEach(function(u){' \
             'u.co=t;db.jobs[j].save(u);delete u._id});' \
             'return a;}'
@@ -371,7 +403,7 @@ class Status:
         jobs = [storify(j) for j in db.jobconfs.find()]
         for j in jobs:
             qc = db.jobs[j.name].count()
-            coqc = db.jobs[j.name].find({'co':{'$gt':0}}).count()
+            coqc = 0 # db.jobs[j.name].find({'co':{'$gt':0}}).count()
             inqc = db.inq[j.name].count()
             j.queue = Storage(count=qc, cocount=coqc, inqcount=inqc)
 
