@@ -1,0 +1,44 @@
+<%
+import locale
+locale.setlocale(locale.LC_ALL, 'en_US')
+%>
+<html>
+<head>
+<title>Crawl Headquarters</title>
+<link rel="stylesheet" type="text/css" href="hq.css">
+<script src="/crawling/hq/jquery-1.4.4.js"></script>
+<style type="text/css">
+td.n { text-align: right; }
+</style>
+</head>
+<body>
+<h1>Crawl Headquarters</h1>
+<div>
+<h2>Jobs</h2>
+<table border="1" style="border-collapse:collapse;">
+  <tr>
+    <th>#</th>
+    <th>name</th>
+    <th>queue length</th>
+    <th>URIs in-process</th>
+    <th>incoming queue</th>
+    <th>Ops</th>
+  </tr>
+% for i, j in enumerate(jobs):
+  <tr>
+    <td>${i + 1}</td>
+    <td>${j.name}</td>
+    <td class="n">${format(j.queue.count,'n')}</td>
+    <td class="n">${format(j.queue.cocount,'n')}</td>
+    <td class="n">${format(j.queue.inqcount,'n')}</td>
+    <td><button>Reset</button><button>Enqueue</button></td>
+  </tr>
+% endfor
+</table>
+<div>${len(jobs)} ${('jobs', 'job')[len(jobs) > 1]}</div>
+<div><button>Add</button></div>
+</div>
+<h2>Seen</h2>
+<div>${format(seen.count,'n')} entries</div>
+</body>
+</html>
