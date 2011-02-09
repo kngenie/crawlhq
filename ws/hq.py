@@ -94,28 +94,36 @@ class Headquarters:
 
     NQUEUES = 4096
 
+    def setqueueid(self, curi):
+        if 'fp' not in curi:
+            curi['fp'] = (_fp12(curi['u']['h']) >> (64-12))
+
     def queuename(self, n):
         return "q%03x" % n
 
     def queueforcuri(self, curi):
-        if 'fp' not in curi:
-            curi['fp'] = (_fp12(curi['u']['h']) >> (64-12))
+        self.setqueueid(curi)
         return self.queuename(curi['fp'])
 
-    def queuesfornode(self, name, nodes):
+    def queueidsfornode(self, name, nodes):
         '''return list of queue ids for node name of nodes-node cluster'''
         return range(0, self.NQUEUES, nodes)
         
-        
     def schedule(self, job, curi):
         '''curi must have u parameter in urlkey format'''
-        q = self.queueforcuri(curi)
-        db.jobs[job][q].save(curi)
+        curi.pop('c', None)
+        curi.pop('e', None)
+        curi['co'] = 0
+        #q = self.queueforcuri(curi)
+        #db.jobs[job][q].save(curi)
+        self.setqueueid(curi)
+        db.jobs[job].save(curi)
 
     def deschedule(self, job, curi):
         '''remove curi from queue - curi must have _id from seen database'''
-        q = self.queueforcuri(curi)
-        db.jobs[job][q].remove({'_id':curi['_id']})
+        #q = self.queueforcuri(curi)
+        #db.jobs[job][q].remove({'_id':curi['_id']})
+        db.jobs[job].remove({'_id':curi['_id']})
 
     def uriquery(self, uri):
         return {'u.s': uri['s'],
@@ -280,8 +288,7 @@ class Headquarters:
         # TODO: check result.ok
         curi = result['value']
         if self.crawl_now(curi):
-            #fp = curi.get('fp')
-            #if fp is None:
+            #if 'fp' not in curi:
             #    try:
             #        fp = fingerprint(uri)
             #    except Exception, ex:
@@ -292,9 +299,8 @@ class Headquarters:
             #    if fp >= (1<<63):
             #        fp = (1<<64) - fp
             #    db.seen.update({'_id':curi['_id']},{'$set':{'fp':fp}})
-            curi.update(p=path, v=via, x=context, fp=fp)
-            del curi['c']
-            curi.pop('e', None)
+            #    curi['fp'] = fp
+            curi.update(p=path, v=via, x=context)
             scheduletime = time.time()
             self.schedule(job, curi)
             scheduletime = time.time() - scheduletime
@@ -429,7 +435,7 @@ class Headquarters:
         count = int(p.n)
         if count < 1: count = 5
 
-        queues = self.queuesfornode(name, nodes)
+        queues = self.queueidsfornode(name, nodes)
         random.shuffle(queues)
 
         # return an JSON array of objects with properties:
@@ -437,10 +443,11 @@ class Headquarters:
         excount = 0
         r = []
         for qn in itertools.repeat(queues):
-            q = db.jobs[job][self.qname(qn)]
-            q = 'jobs.%s.%s' % (job, self.qname(qn))
+            #q = 'jobs.%s.%s' % (job, self.qname(qn))
+            q = 'jobs.%s' % job
+            f = {'co':0, fp:qn}
             result = db.command('findAndModify', q,
-                                query={'co':None},
+                                query=f,
                                 update={'$set':{'co': time.time()}},
                                 upsert=False,
                                 allowable_errors=['No matching object found'])
@@ -504,12 +511,12 @@ class Headquarters:
         if name is None or nodes is None:
             r.update(msg='name and nodes are required')
             return self.jsonres(r)
-        queues = self.queuesfornode(name, nodes)
+        queues = self.queueidsfornode(name, nodes)
         le = []
         for qn in queues:
-            e = db.jobs[job][self.queuename(qn)].update(
-                {'c':{'$gt': 0}},
-                {'$unset':{'co':1}},
+            e = db.jobs[job].update(
+                {'co':{'$gt': 0}, 'fp':{'$in':queues}},
+                {'$set':{'co':0}},
                 multi=True, safe=True)
             le.append(le)
         r.update(e=le)
