@@ -13,6 +13,7 @@ import bson
 import json
 import time
 import re
+import itertools
 from mako.template import Template
 from mako.lookup import TemplateLookup
 from hashcrawlmapper import fingerprint
@@ -71,10 +72,14 @@ class Headquarters:
         web.header('content-type', 'text/json')
         return json.dumps(r, check_circular=False, separators=',:') + "\n"
     
-    def longkeyhash(self, s):
+    def longkeyhash32(self, s):
         return ("#%x" % (fpgenerator.std32(s) >> 32))
+    def longkeyhash64(self, s):
+        return ("#%x" % fpgenerator.std64(s))
 
-    def urlkey(self, url):
+    longkeyhash = longkeyhash64
+
+    def urlkey_shpq(self, url):
         scheme, netloc, path, query, fragment = urlsplit(url)
         k = dict(s=scheme, h=netloc)
         if len(path) < 800:
@@ -87,16 +92,61 @@ class Headquarters:
             k.update(Q=query, q=self.longkeyhash(query))
         return k
 
-    def keyurl(self, u):
+    def keyurl_shpq(self, u):
         return urlunsplit(u['s'], u['h'],
                           u['P'] if 'op' in u else u['p'],
                           u['Q'] if 'oq' in u else u['q'])
+
+    def uriquery_shpq(self, uri):
+        return {'u.s': uri['s'],
+                'u.h': uri['h'],
+                'u.p': uri['p'],
+                'u.q': uri['q']}
+    
+    # always use fp - this is way too slow (>1.6s/80URIs)
+    def urlkey_du(self, url):
+        k = dict(h=self.longkeyhash64(url), u=url)
+        return k
+
+    def keyurl_du(self, k):
+        return k['u']
+
+    def uriquery_du(self, k):
+        return k
+
+    # split long URL, use fp for the tail (0.02-0.04s/80URIs)
+    def urlkey_ud(self, url):
+        # 790 < 800 - (32bit/4bit + 1)
+        if len(url) > 790:
+            u1, u2 = url[:790], url[790:]
+            k = dict(u1=u1, u2=u2, h=self.longkeyhash32(u2))
+        else:
+            k = dict(u1=url, h='')
+        return k
+    def keyurl_ud(self, k):
+        return k['u1']+k['u2'] if 'u2' in k else k['u1']
+    def keyhost_ud(self, k):
+        try:
+            # assuming netloc part is shorter than 790
+            url = k['u1']
+            p1 = url.index('://')
+            p2 = url.index('/', p1+3)
+            return url[p1+3:p2]
+        except:
+            return ''
+    def uriquery_ud(self, k):
+        return {'u.u1':k['u1'], 'u.h':k['h']}
+
+    urlkey = urlkey_ud
+    keyurl = keyurl_ud
+    keyhost = keyhost_ud
+    uriquery = uriquery_ud
 
     NQUEUES = 4096
 
     def setqueueid(self, curi):
         if 'fp' not in curi:
-            curi['fp'] = (_fp12(curi['u']['h']) >> (64-12))
+            curi['fp'] = (_fp12(self.keyhost(curi['u'])) >> (64-12))
 
     def queuename(self, n):
         return "q%03x" % n
@@ -107,7 +157,9 @@ class Headquarters:
 
     def queueidsfornode(self, name, nodes):
         '''return list of queue ids for node name of nodes-node cluster'''
-        return range(0, self.NQUEUES, nodes)
+        qids = range(0, self.NQUEUES, nodes)
+        random.shuffle(qids)
+        return qids
         
     def schedule(self, job, curi):
         '''curi must have u parameter in urlkey format'''
@@ -125,12 +177,6 @@ class Headquarters:
         #db.jobs[job][q].remove({'_id':curi['_id']})
         db.jobs[job].remove({'_id':curi['_id']})
 
-    def uriquery(self, uri):
-        return {'u.s': uri['s'],
-                'u.h': uri['h'],
-                'u.p': uri['p'],
-                'u.q': uri['q']}
-    
     def _update_seen(self, id, uri, data, finished, expire):
         '''update seen database with data specified.
         returned curi have _id and u properties only'''
@@ -260,33 +306,48 @@ class Headquarters:
         return self.jsonres(result)
 
     def crawl_now(self, curi):
+        # no 'e' value means 'do not crawl'
         return curi['c'] == 1 or \
             curi.get('e', sys.maxint) < time.time()
 
     def schedule_unseen(self, job,
-                        uri, path=None, via=None, context=None, **rest):
+                        uri, path=None, via=None, context=None,
+                        expire=None,
+                        **rest):
         '''schedules uri if not "seen" (or seen status has expired)
+        in current implemtation, seeds (path='') are scheduled
+        regardless of "seen" status.
         uri: string'''
         # check with seed list - use of find_and_modify prevents
         # the same URI being submitted concurrently from being scheduled
         # as well. with new=True, find_and_modify() returns updated
         # (newly created) object.
-        #curi = db.seen.find_and_modify({'uri':uri},
-        #                               update={'$set':{'uri':uri},
-        #                                       '$inc':{'c':1}},
-        #                               upsert=True, new=True)
-        # method find_and_modify is available only in 1.10+
         u = self.urlkey(uri)
         seentime = time.time()
-        result = db.command('findAndModify', 'seen',
-                            query=self.uriquery(u),
-                            update={'$set': {'u': u},
-                                    '$inc': {'c': 1}},
-                            upsert=True,
-                            new=True)
-        seentime = time.time() - seentime
-        # TODO: check result.ok
-        curi = result['value']
+        if True:
+            update={'$set':{'u': u}, '$inc':{'c': 1}}
+            if expire is not None:
+                update['$set']['e'] = expire
+            result = db.command('findAndModify', 'seen',
+                                query=self.uriquery(u),
+                                update=update,
+                                upsert=True,
+                                new=True)
+            seentime = time.time() - seentime
+            # TODO: check result.ok
+            curi = result['value']
+        else:
+            curi = db.seen.find_one(self.uriquery(u))
+            if curi is None:
+                curi = {'u':u, 'c':1}
+                if expire is not None:
+                    curi['e'] = expire
+                db.seen.insert(curi)
+            else:
+                if expire is not None:
+                    curi['e'] = expire
+                curi['c'] = 2
+                                    
         if self.crawl_now(curi):
             #if 'fp' not in curi:
             #    try:
@@ -325,35 +386,43 @@ class Headquarters:
             return self.jsonres(result)
 
         start = time.time()
-        db.inq[job].save(dict(d=curis))
-        #print >>sys.stderr, "mdiscovered %s in %fs" % \
-        #    (result, (time.time() - start))
+        if False:
+            # this takes 2x longer
+            for curi in curis:
+                db.inq[job].insert(curi)
+        else:
+            db.inq[job].save(dict(d=curis))
         result.update(processed=len(curis), t=(time.time() - start))
+        print >>sys.stderr, "mdiscovered %s in %fs" % \
+            (result, (time.time() - start))
         db.connection.end_request()
         return self.jsonres(result)
 
     def processinq(self, job, queue, result):
         try:
-            for d in queue():
-                for curi in d:
-                    result['processed'] += 1
-                    if self.schedule_unseen(job,
-                                            curi['u'],
-                                            path=curi.get('p'),
-                                            via=curi.get('v'),
-                                            context=curi.get('x')):
-                        result['scheduled'] += 1
+            for curi in queue():
+                result['processed'] += 1
+                if self.schedule_unseen(job,
+                                        curi['u'],
+                                        path=curi.get('p'),
+                                        via=curi.get('v'),
+                                        context=curi.get('x'),
+                                        expire=curi.get('e')):
+                    result['scheduled'] += 1
         except Exception as ex:
             print >>sys.stderr, ex
             
     def do_processinq(self, job):
+        '''process incoming queue. max parameter advise upper limit on
+        number of URIs processed. actually processed URIs may exceed that
+        number if incoming queue is storing URIs in chunks'''
         p = web.input(max=5000)
         maxn = int(p.max)
         result = dict(inq=0, processed=0, scheduled=0, max=maxn)
         start = time.time()
 
         def getinq():
-            while result['inq'] < maxn:
+            while result['processed'] < maxn:
                 r = db.command('findAndModify', 'inq.%s' % job,
                                remove=True,
                                allowable_errors=['No matching object found'])
@@ -364,7 +433,24 @@ class Headquarters:
                 e = r['value']
                 if 'd' in e:
                     # discovered
-                    yield e['d']
+                    for curi in e['d']:
+                        yield curi
+                else:
+                    yield e
+
+        def getinq2():
+            '''less reliable, but ok for single thread'''
+            while result['processed'] < maxn:
+                e = db.inq[job].find_one()
+                if e is None:
+                    break
+                db.inq[job].remove({'_id':e['_id']})
+                result['inq'] += 1
+                if 'd' in e:
+                    for curi in e['d']:
+                        yield curi
+                else:
+                    yield e
 
         if False:
             th1 = threading.Thread(target=self.processinq, args=(job, getinq, result))
@@ -374,9 +460,10 @@ class Headquarters:
             th1.join()
             th2.join()
         else:
-            self.processinq(job, getinq, result)
+            self.processinq(job, getinq2, result)
 
         result.update(t=(time.time() - start))
+        db.connection.end_request()
         return self.jsonres(result)
 
     def do_processinq2(self, job):
@@ -400,6 +487,7 @@ class Headquarters:
                         result['scheduled'] += 1
             db.inq[job].remove(e['_id'])
         result.update(t=(time.time() - start))
+        db.connection.end_request()
         return self.jsonres(result)
 
     def do_mdiscovered2(self, job):
@@ -426,8 +514,69 @@ class Headquarters:
                     result['scheduled'] += 1
         print >>sys.stderr, "mdiscovered %s in %fs" % \
             (result, (time.time() - start))
+        db.connection.end_request()
         return self.jsonres(result)
                 
+    def makecuri(self, o):
+        curi = dict(u=self.keyurl(o['u']), id=str(o['_id']), p=o.get('p',''))
+        for k in ('v', 'x', 'a', 'fp'):
+            if k in o: curi[k] = o[k]
+        return curi
+        
+    # safe for multi-threaded access to a work set.
+    def dequeue1_fam(self, job, qn):
+        q = 'jobs.%s' % job
+        f = {'co':0, 'fp':qn}
+        result = db.command('findAndModify', q,
+                            query=f,
+                            update={'$set':{'co': time.time()}},
+                            upsert=False,
+                            allowable_errors=['No matching object found'])
+        if result['ok'] != 0:
+            return self.makecuri(result['value'])
+        else:
+            return None
+    
+    # only safe for single thread per work set.
+    def dequeue1_f1u(self, job, qn):
+        f = dict(co=0, fp=qn)
+        o = db.jobs[job].find_one(f)
+        if o:
+            db.jobs[job].update({'_id':o['_id']},
+                                {'$set':{'co':time.time()}},
+                                upsert=False,
+                                multi=False)
+            return self.makecuri(o)
+        else:
+            return None
+            
+    dequeue1 = dequeue1_f1u
+    
+    def do_feed_batch(self, job):
+        '''a bit faster, but tends to return URIs in a single working set,
+        leading to less per-host queues in crawler, slow crawl rate.'''
+        p = web.input(n=5, name=0, nodes=1)
+        name = int(p.name)
+        nodes = int(p.nodes)
+        count = int(p.n)
+        if count < 1: count = 5
+
+        start = time.time()
+        queues = self.queueidsfornode(name, nodes)
+
+        f = dict(co=0, fp={'$in':queues})
+        r = []
+        for o in db.jobs[job].find(f, limit=count, sort=[('$natural',1)]):
+            db.jobs[job].update({'_id':o['_id']},
+                                {'$set':{'co':time.time()}},
+                                upsert=False, multi=False)
+            r.append(self.makecuri(o))
+        db.connection.end_request()
+        print >>sys.stderr, "feed %s/%s %s in %.4fs" % (
+            name, nodes, len(r), time.time() - start)
+        web.header('content-type', 'text/json')
+        return self.jsonres(r)
+
     def do_feed(self, job):
         p = web.input(n=5, name=0, nodes=1)
         name = int(p.name)
@@ -435,35 +584,31 @@ class Headquarters:
         count = int(p.n)
         if count < 1: count = 5
 
-        queues = self.queueidsfornode(name, nodes)
-        random.shuffle(queues)
+        # repeat over queue numbers (could use itertools.cycle, but
+        # this generator does it without making a copy of list
+        def queue_sequence():
+            queues = self.queueidsfornode(name, nodes)
+            while 1:
+                for qn in queues:
+                    yield qn
 
+        start = time.time()
         # return an JSON array of objects with properties:
         # uri, path, via, context and data
         excount = 0
         r = []
-        for qn in itertools.repeat(queues):
-            #q = 'jobs.%s.%s' % (job, self.qname(qn))
-            q = 'jobs.%s' % job
-            f = {'co':0, fp:qn}
-            result = db.command('findAndModify', q,
-                                query=f,
-                                update={'$set':{'co': time.time()}},
-                                upsert=False,
-                                allowable_errors=['No matching object found'])
-            if result['ok'] != 0:
+        for qn in queue_sequence():
+            curi = self.dequeue1(job, qn)
+            if curi:
                 excount = 0
-                o = result['value']
-                curi = dict(u=self.keyurl(o['u']), id=str(o['_id']))
-                for k in ('p', 'v', 'x', 'a'):
-                    curi[k] = o[k]
                 r.append(curi)
-                if len(r) == count:
-                    break
+                if len(r) == count: break
             else:
                 excount += 1
-                if excount > len(queues):
-                    break
+                if excount > len(queues): break
+        db.connection.end_request()
+        print >>sys.stderr, "feed %s/%s %s in %.4fs" % (
+            name, nodes, len(r), time.time() - start)
         web.header('content-type', 'text/json')
         return self.jsonres(r)
 
@@ -557,7 +702,8 @@ class Status:
             j.queue = Storage(count=qc, cocount=coqc, inqcount=inqc)
 
         seenCount =db.seen.count()
-
+        db.connection.end_request()
+        
         web.header('content-type', 'text/html')
         return self.render('status.html',
                     jobs=jobs,
