@@ -402,6 +402,7 @@ class Headquarters:
         try:
             for curi in queue():
                 result['processed'] += 1
+                t0 = time.time()
                 if self.schedule_unseen(job,
                                         curi['u'],
                                         path=curi.get('p'),
@@ -409,6 +410,7 @@ class Headquarters:
                                         context=curi.get('x'),
                                         expire=curi.get('e')):
                     result['scheduled'] += 1
+                result['ts'] += (time.time() - t0)
         except Exception as ex:
             print >>sys.stderr, ex
             
@@ -418,7 +420,8 @@ class Headquarters:
         number if incoming queue is storing URIs in chunks'''
         p = web.input(max=5000)
         maxn = int(p.max)
-        result = dict(inq=0, processed=0, scheduled=0, max=maxn)
+        result = dict(inq=0, processed=0, scheduled=0, max=maxn,
+                      td=0.0, ts=0.0)
         start = time.time()
 
         def getinq():
@@ -441,10 +444,12 @@ class Headquarters:
         def getinq2():
             '''less reliable, but ok for single thread'''
             while result['processed'] < maxn:
+                start = time.time()
                 e = db.inq[job].find_one()
                 if e is None:
                     break
                 db.inq[job].remove({'_id':e['_id']})
+                result['td'] += (time.time() - start)
                 result['inq'] += 1
                 if 'd' in e:
                     for curi in e['d']:
