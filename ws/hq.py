@@ -116,44 +116,45 @@ class Headquarters:
 
     # split long URL, use fp for the tail (0.02-0.04s/80URIs)
     def urlkey_ud(self, url):
+        k = {}
         # 790 < 800 - (32bit/4bit + 1)
         if len(url) > 790:
             u1, u2 = url[:790], url[790:]
-            k = dict(u1=u1, u2=u2, h=self.longkeyhash32(u2))
+            k.update(u1=u1, u2=u2, h=self.longkeyhash32(u2))
         else:
-            k = dict(u1=url, h='')
+            k.update(u1=url, h='')
         return k
     def keyurl_ud(self, k):
         return k['u1']+k['u2'] if 'u2' in k else k['u1']
+    def keyfp_ud(self, k):
+        url = k['u1']
+        p1 = url.find('://')
+        if p1 > 0:
+            p2 = url.find('/', p1+3)
+            host = url[p1+3:p2] if p2 >= 0 else url[p1+3:]
+        else:
+            host = ''
+        return self.hosthash(host)
     def keyhost_ud(self, k):
-        try:
-            # assuming netloc part is shorter than 790
-            url = k['u1']
-            p1 = url.index('://')
-            p2 = url.index('/', p1+3)
-            return url[p1+3:p2]
-        except:
-            return ''
+        return k['H']
     def uriquery_ud(self, k):
         return {'u.u1':k['u1'], 'u.h':k['h']}
 
     urlkey = urlkey_ud
     keyurl = keyurl_ud
-    keyhost = keyhost_ud
+    keyfp = keyfp_ud
     uriquery = uriquery_ud
 
     NQUEUES = 4096
 
-    def setqueueid(self, curi):
-        if 'fp' not in curi:
-            curi['fp'] = (_fp12(self.keyhost(curi['u'])) >> (64-12))
+    def hosthash(self, h):
+        return _fp12(h) >> (64-12)
+    #def setqueueid(self, curi):
+    #    if 'fp' not in curi:
+    #        curi['fp'] = self.hosthash(self.keyhost(curi['u']))
 
     def queuename(self, n):
         return "q%03x" % n
-
-    def queueforcuri(self, curi):
-        self.setqueueid(curi)
-        return self.queuename(curi['fp'])
 
     def queueidsfornode(self, name, nodes):
         '''return list of queue ids for node name of nodes-node cluster'''
@@ -166,44 +167,40 @@ class Headquarters:
         curi.pop('c', None)
         curi.pop('e', None)
         curi['co'] = 0
-        #q = self.queueforcuri(curi)
-        #db.jobs[job][q].save(curi)
-        self.setqueueid(curi)
+        #self.setqueueid(curi)
         db.jobs[job].save(curi)
 
     def deschedule(self, job, curi):
         '''remove curi from queue - curi must have _id from seen database'''
-        #q = self.queueforcuri(curi)
-        #db.jobs[job][q].remove({'_id':curi['_id']})
         db.jobs[job].remove({'_id':curi['_id']})
 
-    def _update_seen(self, id, uri, data, finished, expire):
-        '''update seen database with data specified.
+    def _update_seen(self, id, uk, data, finished, expire):
+        '''updates seen database with data specified and returns curi.
         returned curi have _id and u properties only'''
-        assert type(uri) == dict
+        assert type(uk) == dict
         update = {'a': data, 'f': finished, 'e': expire}
         if id:
-            curi = {'_id': bson.objectid.ObjectId(id), 'u': uri}
+            curi = {'_id': bson.objectid.ObjectId(id), 'u': uk}
         else:
-            curi = db.seen.find_one(self.uriquery(uri), {'u':1, 'fp':1})
+            curi = db.seen.find_one(self.uriquery(uk), {'u':1, 'fp':1})
         if curi:
             db.seen.update({'_id': curi['_id']},
                            {'$set':update},
                            multi=False, upsert=False)
             return curi
         else:
-            update.update(u=uri)
+            update.update(u=uk, fp=self.keyfp(uk))
             db.seen.insert(update)
             return None
 
-    def _update_seen_fnm(self, id, uri, data, finished, expire):
+    def _update_seen_fnm(self, id, uk, data, finished, expire):
         '''variant of _update_seen that uses findAndModify for updating
         curi. this is generally much slower than _update_seen, based on
         experiment result'''
-        assert type(uri) == dict
+        assert type(uk) == dict
         r = db.command('findAndModify', 'seen',
-                       query=self.uriquery(uri),
-                       update={'$set': {'u': uri,
+                       query=self.uriquery(uk),
+                       update={'$set': {'u': uk,
                                         'a': data,
                                         'f': finished,
                                         'e': expire}},
@@ -214,18 +211,18 @@ class Headquarters:
         # findAndModify returns {} when newly insered
         return curi if curi else None
         
-    def update_seen(self, id, uri, data, finished, expire=None):
+    def update_seen(self, id, uk, data, finished, expire=None):
         if expire is None:
             # seen status expires after 2 months
             # TODO: allow custom expiration per job/domain/URI
             expire = finished + 60 * 24 * 3600
         t0 = time.time()
-        u = self._update_seen(id, uri, data, finished, expire)
+        u = self._update_seen(id, uk, data, finished, expire)
         #print >>sys.stderr, "update_seen %f" % (time.time() - t0)
         return u
         # important: keep 'c' value (see do_discovered below)
             
-        #db.seen.update({'u': uri},
+        #db.seen.update({'u': uk},
         #               {'$set': {'a': data,
         #                         'f': finished,
         #                         'e': expire}},
@@ -246,10 +243,10 @@ class Headquarters:
         curis = json.loads(payload)
         now = time.time()
         for curi in curis:
-            uri = self.urlkey(curi['u'])
+            uk = self.urlkey(curi['u'])
             finished = curi.get('f', now)
-            #print >>sys.stderr, "mfinished uri=", uri
-            u = self.update_seen(curi.get('id'), uri, curi['a'], finished)
+            #print >>sys.stderr, "mfinished uri=", uk
+            u = self.update_seen(curi.get('id'), uk, curi['a'], finished)
             if u:
                 self.deschedule(job, u)
             #db.jobs[job].remove({'u': uri})
@@ -263,7 +260,7 @@ class Headquarters:
         p = web.input(a='{}', f=time.time(), id=None)
         uri = p.u
         id = p.id
-        u = self.urlkey(uri)
+        uk = self.urlkey(uri)
         # data: JSON with properties: content-digest, etag, last-modified
         data = json.loads(p.a)
         finished = p.f
@@ -271,7 +268,7 @@ class Headquarters:
         result = dict(processed=0)
         # 1. update seen record
         updatestart = time.time()
-        u = self.update_seen(id, u, data, finished)
+        u = self.update_seen(id, uk, data, finished)
 
         # 2. remove curi from scheduled URIs collection
         # should we get _id from seen collection for use in remove()?
@@ -322,14 +319,15 @@ class Headquarters:
         # the same URI being submitted concurrently from being scheduled
         # as well. with new=True, find_and_modify() returns updated
         # (newly created) object.
-        u = self.urlkey(uri)
+        uk = self.urlkey(uri)
         seentime = time.time()
         if True:
-            update={'$set':{'u': u}, '$inc':{'c': 1}}
+            fp = self.keyfp(uk)
+            update={'$set':{'u': uk, 'fp':fp}, '$inc':{'c': 1}}
             if expire is not None:
                 update['$set']['e'] = expire
             result = db.command('findAndModify', 'seen',
-                                query=self.uriquery(u),
+                                query=self.uriquery(uk),
                                 update=update,
                                 upsert=True,
                                 new=True)
@@ -337,9 +335,9 @@ class Headquarters:
             # TODO: check result.ok
             curi = result['value']
         else:
-            curi = db.seen.find_one(self.uriquery(u))
+            curi = db.seen.find_one(self.uriquery(uk))
             if curi is None:
-                curi = {'u':u, 'c':1}
+                curi = {'u':uk, 'c':1, 'fp':self.keyfp(uk)}
                 if expire is not None:
                     curi['e'] = expire
                 db.seen.insert(curi)
