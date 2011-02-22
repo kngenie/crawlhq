@@ -257,7 +257,7 @@ class Headquarters:
         return self.jsonres(result)
 
     def do_finished(self, job):
-        p = web.input(a='{}', f=time.time(), id=None)
+        p = web.input(a='{}', f=int(time.time()), id=None)
         uri = p.u
         id = p.id
         uk = self.urlkey(uri)
