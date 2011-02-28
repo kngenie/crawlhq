@@ -50,23 +50,22 @@ db = mongo.crawl
 atexit.register(mongo.disconnect)
 
 _fp12 = fpgenerator.make(0xE758000000000000, 12)
+_fp63 = fpgenerator.make(0xE1F8D6B3195D6D97, 63)
 
 class Headquarters:
     def __init__(self):
         #print >>sys.stderr, "new Headquarters instance created"
         pass
     def GET(self, job, action):
-        if action in ('feed', 'ofeed', 'reset', 'processinq'):
+        if action in ('feed', 'ofeed', 'reset', 'processinq', 'setupindex'):
             return self.POST(job, action)
         else:
             web.header('content-type', 'text/html')
             return '<html><body>job=%s, action=%s</body></html>' % (job, action)
     def POST(self, job, action):
-        a = 'do_' + action
-        if hasattr(self, a):
-            return (getattr(self, a))(job)
-        else:
-            raise web.notfound('hoge')
+        h = getattr(self, 'do_' + action, None)
+        if h is None: raise web.notfound(action)
+        return h(job)
 
     def jsonres(self, r):
         web.header('content-type', 'text/json')
@@ -148,7 +147,11 @@ class Headquarters:
     NQUEUES = 4096
 
     def hosthash(self, h):
-        return _fp12(h) >> (64-12)
+        # mongodb can only handle upto 64bit signed int
+        return (_fp63(h) >> 1)
+    def workset(self, hostfp):
+        return hostfp >> (63-12)
+
     #def setqueueid(self, curi):
     #    if 'fp' not in curi:
     #        curi['fp'] = self.hosthash(self.keyhost(curi['u']))
@@ -167,67 +170,46 @@ class Headquarters:
         curi.pop('c', None)
         curi.pop('e', None)
         curi['co'] = 0
+        curi['fp'] = self.workset(curi['fp'])
         #self.setqueueid(curi)
         db.jobs[job].save(curi)
 
     def deschedule(self, job, curi):
         '''remove curi from queue - curi must have _id from seen database'''
-        db.jobs[job].remove({'_id':curi['_id']})
-
-    def _update_seen(self, id, uk, data, finished, expire):
-        '''updates seen database with data specified and returns curi.
-        returned curi have _id and u properties only'''
-        assert type(uk) == dict
-        update = {'a': data, 'f': finished, 'e': expire}
-        if id:
-            curi = {'_id': bson.objectid.ObjectId(id), 'u': uk}
+        if 'id' in curi:
+            db.jobs[job].remove({'_id':bson.objectid.ObjectId(curi['id'])})
         else:
-            curi = db.seen.find_one(self.uriquery(uk), {'u':1, 'fp':1})
-        if curi:
-            db.seen.update({'_id': curi['_id']},
-                           {'$set':update},
-                           multi=False, upsert=False)
-            return curi
-        else:
-            update.update(u=uk, fp=self.keyfp(uk))
-            db.seen.insert(update)
-            return None
+            db.jobs[job].remove(self.uriquery(curi['u']))
 
-    def _update_seen_fnm(self, id, uk, data, finished, expire):
-        '''variant of _update_seen that uses findAndModify for updating
-        curi. this is generally much slower than _update_seen, based on
-        experiment result'''
-        assert type(uk) == dict
-        r = db.command('findAndModify', 'seen',
-                       query=self.uriquery(uk),
-                       update={'$set': {'u': uk,
-                                        'a': data,
-                                        'f': finished,
-                                        'e': expire}},
-                       fields={'u':1, 'fp':1},
-                       upsert=True,
-                       new=False)
-        curi = r['value']
-        # findAndModify returns {} when newly insered
-        return curi if curi else None
-        
-    def update_seen(self, id, uk, data, finished, expire=None):
+    def _update_seen(self, curi, expire):
+        '''updates seen database with data specified'''
+        update = {'a': curi['a'], 'f': curi['f'], 'e': expire,
+                  'u': curi['u'], 'fp': self.keyfp(curi['u'])}
+        if 'id' in curi:
+            flt = {'_id': bson.objectid.ObjectId(curi['id'])}
+        else:
+            flt = self.uriquery(curi['u'])
+        # not that this update does not set 'fp' to new entries.
+        # they will be taken care of when they got scheduled.
+        # it is waste of CPU cycle to compute fp for every finished
+        # URLs as we expect entry exists in seen list for most of
+        # the time.
+        db.seen.update(flt,
+                       {'$set': update},
+                       multi=False, upsert=True)
+
+    def update_seen(self, curi, expire=None):
+        finished = curi.get('f')
+        if finished is None:
+            finished = curi['f'] = int(time.time())
         if expire is None:
             # seen status expires after 2 months
             # TODO: allow custom expiration per job/domain/URI
-            expire = finished + 60 * 24 * 3600
+            expire =  finished + 60 * 24 * 3600
         t0 = time.time()
-        u = self._update_seen(id, uk, data, finished, expire)
+        self._update_seen(curi, expire)
         #print >>sys.stderr, "update_seen %f" % (time.time() - t0)
-        return u
-        # important: keep 'c' value (see do_discovered below)
             
-        #db.seen.update({'u': uk},
-        #               {'$set': {'a': data,
-        #                         'f': finished,
-        #                         'e': expire}},
-        #               upsert=True, multi=False)
-    
     def do_mfinished(self, job):
         '''process finished event in a batch. array of finished crawl URIs
            in the body. each crawl URI is an object with following properties:
@@ -243,13 +225,11 @@ class Headquarters:
         curis = json.loads(payload)
         now = time.time()
         for curi in curis:
-            uk = self.urlkey(curi['u'])
+            curi['u'] = self.urlkey(curi['u'])
             finished = curi.get('f', now)
             #print >>sys.stderr, "mfinished uri=", uk
-            u = self.update_seen(curi.get('id'), uk, curi['a'], finished)
-            if u:
-                self.deschedule(job, u)
-            #db.jobs[job].remove({'u': uri})
+            self.deschedule(job, curi)
+            self.update_seen(curi)
             result['processed'] += 1
         result.update(t=(time.time() - now))
         print >>sys.stderr, "mfinished ", result
@@ -257,27 +237,19 @@ class Headquarters:
         return self.jsonres(result)
 
     def do_finished(self, job):
-        p = web.input(a='{}', f=int(time.time()), id=None)
-        uri = p.u
-        id = p.id
-        uk = self.urlkey(uri)
-        # data: JSON with properties: content-digest, etag, last-modified
-        data = json.loads(p.a)
-        finished = p.f
+        p = web.input(a='{}', f=None, id=None)
+        curi = dict(u=self.urlkey(p.u),
+                    f=p.f,
+                    a=json.loads(p.a))
+        if p.id: curi.update(id=p.id)
 
         result = dict(processed=0)
         # 1. update seen record
         updatestart = time.time()
-        u = self.update_seen(id, uk, data, finished)
-
-        # 2. remove curi from scheduled URIs collection
-        # should we get _id from seen collection for use in remove()?
-        # (it's more efficient)
+        self.deschedule(job, curi)
         removestart = time.time()
-        #db.jobs[job].remove({'u':u})
+        self.update_seen(curi)
 
-        if u:
-            self.unschedule(job, u)
         result['processed'] += 1
         now = time.time()
         result.update(t=(now - updatestart()),
@@ -321,9 +293,8 @@ class Headquarters:
         # (newly created) object.
         uk = self.urlkey(uri)
         seentime = time.time()
-        if True:
-            fp = self.keyfp(uk)
-            update={'$set':{'u': uk, 'fp':fp}, '$inc':{'c': 1}}
+        if False:
+            update={'$set':{'u':uk, 'fp':self.keyfp(uk)}, '$inc':{'c':1}}
             if expire is not None:
                 update['$set']['e'] = expire
             result = db.command('findAndModify', 'seen',
@@ -331,43 +302,28 @@ class Headquarters:
                                 update=update,
                                 upsert=True,
                                 new=True)
+            curi = result['value']
+            isnew = (curi['c'] == 1)
             seentime = time.time() - seentime
             # TODO: check result.ok
-            curi = result['value']
         else:
             curi = db.seen.find_one(self.uriquery(uk))
             if curi is None:
-                curi = {'u':uk, 'c':1, 'fp':self.keyfp(uk)}
+                curi = {'u':uk, 'fp':self.keyfp(uk)}
                 if expire is not None:
                     curi['e'] = expire
                 db.seen.insert(curi)
+                isnew = True
             else:
                 if expire is not None:
                     curi['e'] = expire
-                curi['c'] = 2
+                isnew = False
                                     
-        if self.crawl_now(curi):
-            #if 'fp' not in curi:
-            #    try:
-            #        fp = fingerprint(uri)
-            #    except Exception, ex:
-            #        print >>sys.stderr, "fingerprint(%s) failed: " % uri, ex
-            #        return False
-            #    # Mongodb supports up to 64-bit *signed* int. This is also
-            #    # compatible with H3's HashCrawlMapper.
-            #    if fp >= (1<<63):
-            #        fp = (1<<64) - fp
-            #    db.seen.update({'_id':curi['_id']},{'$set':{'fp':fp}})
-            #    curi['fp'] = fp
+        if isnew or curi.get('e', sys.maxint) < time.time():
             curi.update(p=path, v=via, x=context)
-            scheduletime = time.time()
             self.schedule(job, curi)
-            scheduletime = time.time() - scheduletime
-            #print >>sys.stderr, "schedule_unseen seen=%f, schedule=%f" % \
-            #    (seentime, scheduletime)
             return True
-        #print >>sys.stderr, "schedule_unseen seen=%f, no schedule" % \
-        #    seentime
+
         return False
 
     def do_mdiscovered(self, job):
@@ -411,6 +367,7 @@ class Headquarters:
                 result['ts'] += (time.time() - t0)
         except Exception as ex:
             print >>sys.stderr, ex
+            raise
             
     def do_processinq(self, job):
         '''process incoming queue. max parameter advise upper limit on
@@ -675,6 +632,14 @@ class Headquarters:
     def do_test(self, job):
         web.debug(web.data())
         return str(web.ctx.env)
+
+    def do_setupindex(self, job):
+        db.seen.ensure_index([('u.u1', 1), ('u.h', 1)])
+        db.jobs[job].ensure_index([('u.u1', 1), ('u.h', 1)])
+        db.jobs[job].ensure_index([('co', 1), ('fp', 1)])
+
+        r = dict(job=job, action='setupindex', sucess=1)
+        return self.jsonres(r)
              
 def lref(name):
     # note: SCRIPT_FILENAME is only available in mod_wsgi
