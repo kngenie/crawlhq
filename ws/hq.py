@@ -544,10 +544,10 @@ class Headquarters:
         count = int(p.n)
         if count < 1: count = 5
 
+        queues = self.queueidsfornode(name, nodes)
         # repeat over queue numbers (could use itertools.cycle, but
         # this generator does it without making a copy of list
         def queue_sequence():
-            queues = self.queueidsfornode(name, nodes)
             while 1:
                 for qn in queues:
                     yield qn
