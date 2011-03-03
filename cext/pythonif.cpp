@@ -20,7 +20,7 @@ typedef struct {
 
 int
 cFPGenerator::init(PyObject *self, PyObject *args, PyObject *kwds) {
-  ulong polynomial;
+  poly polynomial;
   int degree;
   static const char *kwlist[] = {"polynomial", "degree", NULL};
   if (!PyArg_ParseTupleAndKeywords(args, kwds, "Ki", (char**)kwlist,
@@ -40,13 +40,13 @@ cFPGenerator::fp(PyObject *self, PyObject *args) {
   Py_ssize_t n;
   if (!PyArg_ParseTuple(args, "s#", &s, &n))
     return NULL;
-  ulong f = ((cFPGenerator*)self)->cobj.fp(s, 0, n);
+  poly f = ((cFPGenerator*)self)->cobj.fp(s, 0, n);
   return PyLong_FromUnsignedLongLong(f);
 }
 
 PyObject *
 cFPGenerator::extend(PyObject *self, PyObject *args) {
-  ulong f;
+  poly f;
   const char *s;
   Py_ssize_t sn;
   int start = 0, n = -1;
@@ -56,26 +56,26 @@ cFPGenerator::extend(PyObject *self, PyObject *args) {
   if (n < 0) n = sn - start;
   if (n == 0)
     return args;
-  ulong ff = ((cFPGenerator*)self)->cobj.extend(f, s, start, n);
+  poly ff = ((cFPGenerator*)self)->cobj.extend(f, s, start, n);
   return PyLong_FromUnsignedLongLong(ff);
 }
 
 PyObject *
 cFPGenerator::extend_byte(PyObject *self, PyObject *args) {
-  ulong f;
+  poly f;
   int v;
   if (!PyArg_ParseTuple(args, "Ki", &f, &v))
     return NULL;
-  ulong ff = ((cFPGenerator*)self)->cobj.extend_byte(f, (byte)(v & 0xff));
+  poly ff = ((cFPGenerator*)self)->cobj.extend_byte(f, (byte)(v & 0xff));
   return PyLong_FromUnsignedLongLong(ff);
 }
 
 PyObject *
 cFPGenerator::reduce(PyObject *self, PyObject *args) {
-  ulong fp;
+  poly fp;
   if (!PyArg_ParseTuple(args, "K", &fp))
     return NULL;
-  ulong ff = ((cFPGenerator*)self)->cobj.reduce(fp);
+  poly ff = ((cFPGenerator*)self)->cobj.reduce(fp);
   return PyLong_FromUnsignedLongLong(ff);
 }
 

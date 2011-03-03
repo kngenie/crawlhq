@@ -4,16 +4,16 @@
 
 #include "fpgenerator.h"
 
-const ulong ZERO = 0;
-const ulong ONE = 0x8000000000000000LL;
+const poly ZERO = 0;
+const poly ONE = 0x8000000000000000LL;
 
-FPGenerator::FPGenerator(ulong polynomial, int degree) {
+FPGenerator::FPGenerator(poly polynomial, int degree) {
   this->degree = degree;
   this->polynomial = polynomial;
 
-  ulong powerTable[128];
-  ulong x_to_the_i = ONE;
-  const ulong x_to_the_degree_minus_one = (ONE >> (degree - 1));
+  poly powerTable[128];
+  poly x_to_the_i = ONE;
+  const poly x_to_the_degree_minus_one = (ONE >> (degree - 1));
 
   for (int i = 0; i < 128; i++) {
     // Invariants:
@@ -30,7 +30,7 @@ FPGenerator::FPGenerator(ulong polynomial, int degree) {
 
   for (int i = 0; i < 16; i++) {
     for (int j = 0; j < 256; j++) {
-      ulong v = ZERO;
+      poly v = ZERO;
       for (int k = 0; k < 8; k++) {
 	if ((j & (1 << k)) != 0) {
 	  v ^= powerTable[127 - i * 8 - k];
@@ -41,23 +41,23 @@ FPGenerator::FPGenerator(ulong polynomial, int degree) {
   }
 }
 
-ulong
+poly
 FPGenerator::fp(const char *buf, int start, int n) {
   return extend(empty, buf, start, n);
 }
 
-ulong
-FPGenerator::extend(ulong f, const char *buf, int start, int n) {
+poly
+FPGenerator::extend(poly f, const char *buf, int start, int n) {
   for (int i = 0; i < n; i++) {
     f = extend_byte(f, buf[start + i]);
   }
   return reduce(f);
 }
 
-ulong FPGenerator::reduce(ulong fp) {
+poly FPGenerator::reduce(poly fp) {
   const int N = (8 - degree/8);
-  ulong local = (N == 8 ? 0 : fp & (-1L << 8 * N));
-  ulong temp = ZERO;
+  poly local = (N == 8 ? 0 : fp & (-1L << 8 * N));
+  poly temp = ZERO;
   for (int i = 0; i < N; i++) {
     temp ^= byteModTable[8 + i][((int)fp) & 0xff];
     fp >>= 8;
@@ -65,10 +65,10 @@ ulong FPGenerator::reduce(ulong fp) {
   return local ^ temp;
 }
 
-ulong FPGenerator::extend_byte(ulong f, byte v) {
+poly FPGenerator::extend_byte(poly f, byte v) {
   f ^= (0xff & v);
   int i = (int)f;
-  ulong result = (f >> 8);
+  poly result = (f >> 8);
   result ^= byteModTable[7][i & 0xff];
   return result;
 }
