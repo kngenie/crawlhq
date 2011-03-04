@@ -17,7 +17,7 @@ import itertools
 from mako.template import Template
 from mako.lookup import TemplateLookup
 from hashcrawlmapper import fingerprint
-import fpgenerator
+from cfpgenerator import FPGenerator
 from urlparse import urlsplit, urlunsplit
 import threading
 import random
@@ -49,15 +49,18 @@ db = mongo.crawl
 #db = mongo.crawl
 atexit.register(mongo.disconnect)
 
-_fp12 = fpgenerator.make(0xE758000000000000, 12)
-_fp63 = fpgenerator.make(0xE1F8D6B3195D6D97, 63)
+_fp12 = FPGenerator(0xE758000000000000, 12)
+_fp32 = FPGenerator(0x9B6C9A2F80000000, 32)
+_fp63 = FPGenerator(0xE1F8D6B3195D6D97, 63)
+_fp64 = FPGenerator(0xD74307D3FD3382DB, 64)
 
 class Headquarters:
     def __init__(self):
         #print >>sys.stderr, "new Headquarters instance created"
         pass
     def GET(self, job, action):
-        if action in ('feed', 'ofeed', 'reset', 'processinq', 'setupindex'):
+        if action in ('feed', 'ofeed', 'reset', 'processinq', 'setupindex',
+                      'rehash'):
             return self.POST(job, action)
         else:
             web.header('content-type', 'text/html')
@@ -72,9 +75,9 @@ class Headquarters:
         return json.dumps(r, check_circular=False, separators=',:') + "\n"
     
     def longkeyhash32(self, s):
-        return ("#%x" % (fpgenerator.std32(s) >> 32))
+        return ("#%x" % (_fp32.fp(s) >> 32))
     def longkeyhash64(self, s):
-        return ("#%x" % fpgenerator.std64(s))
+        return ("#%x" % _fp64.fp(s))
 
     longkeyhash = longkeyhash64
 
@@ -148,7 +151,7 @@ class Headquarters:
 
     def hosthash(self, h):
         # mongodb can only handle upto 64bit signed int
-        return (_fp63(h) >> 1)
+        return (_fp63.fp(h) >> 1)
     def workset(self, hostfp):
         return hostfp >> (63-12)
 
@@ -617,14 +620,11 @@ class Headquarters:
             r.update(msg='name and nodes are required')
             return self.jsonres(r)
         queues = self.queueidsfornode(name, nodes)
-        le = []
-        for qn in queues:
-            e = db.jobs[job].update(
-                {'co':{'$gt': 0}, 'fp':{'$in':queues}},
-                {'$set':{'co':0}},
-                multi=True, safe=True)
-            le.append(le)
-        r.update(e=le)
+        e = db.jobs[job].update(
+            {'co':{'$gt': 0}, 'fp':{'$in':queues}},
+            {'$set':{'co':0}},
+            multi=True, safe=True)
+        r.update(e=e)
         print >>sys.stderr, "reset %s" % str(r)
         # TODO: return number of URIs reset
         return self.jsonres(r)
@@ -640,6 +640,25 @@ class Headquarters:
 
         r = dict(job=job, action='setupindex', sucess=1)
         return self.jsonres(r)
+
+    def do_rehash(self, job):
+        result = dict(seen=0, jobs=0)
+        it = db.seen.find()
+        for u in it:
+            u['fp'] = self.keyfp(u['u'])
+            db.seen.save(u)
+            result['seen'] += 1
+
+        it = db.jobs[job].find()
+        for u in it:
+            uu = db.seen.find_one({'_id':u['_id']})
+            if uu:
+                u['fp'] = self.workset(uu['fp'])
+                db.jobs[job].save(u)
+                result['jobs'] += 1
+
+        return self.jsonres(result)
+
              
 def lref(name):
     # note: SCRIPT_FILENAME is only available in mod_wsgi
