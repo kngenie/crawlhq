@@ -616,6 +616,7 @@ class Headquarters:
         name = int(p.name)
         nodes = int(p.nodes)
         r = dict(name=name, nodes=nodes)
+        print >>sys.stderr, "received reset request: %s" % str(r)
         if name is None or nodes is None:
             r.update(msg='name and nodes are required')
             return self.jsonres(r)
