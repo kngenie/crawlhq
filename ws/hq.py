@@ -16,6 +16,7 @@ from cfpgenerator import FPGenerator
 from urlparse import urlsplit, urlunsplit
 import threading
 import random
+from Queue import Queue
 import atexit
 
 urls = (
@@ -192,8 +193,27 @@ class Scheduler(seen_ud):
         self.job = job
         self.clients = {}
         self.queue = db.jobs[self.job]
+        
+        self.insert_queue = Queue(10000)
+        self.workers = [
+            threading.Thread(target=self.work,
+                            name="insert_worker%d" % i)
+            for i in range(6)
+            ]
+        for th in self.workers:
+            th.setDaemon(True)
+            th.start()
     
     NQUEUES = 4096
+
+    def work(self):
+        while 1:
+            try:
+                c = self.insert_queue.get()
+                if c and len(c) >= 1:
+                    c[0](*c[1:])
+            except:
+                pass
 
     def get_clientqueue(self, client):
         q = self.clients.get(client[0])
@@ -216,7 +236,8 @@ class Scheduler(seen_ud):
         curi.pop('e', None)
         curi['co'] = 0
         curi['fp'] = self.workset(curi['fp'])
-        self.queue.save(curi)
+        #self.queue.save(curi)
+        self.insert_queue.put([self.queue.save, curi])
 
     def deschedule(self, curi):
         '''remove curi from workset'''
@@ -314,14 +335,17 @@ class IncomingQueue(object):
 
     def process(self, maxn):
         '''process curis queued'''
-        result = dict(inq=0, processed=0, scheduled=0, td=0.0, ts=0.0)
+        result = dict(inq=0, processed=0, scheduled=0, td=0.0, ts=0.0,
+                      tu=0.0)
 
         for curi in self.getinq(result, maxn):
             result['processed'] += 1
             t0 = time.time()
             if self.hq.schedule_unseen(self.job, curi):
                 result['scheduled'] += 1
-            result['ts'] += (time.time() - t0)
+                result['ts'] += (time.time() - t0)
+            else:
+                result['tu'] += (time.time() - t0)
 
         return result
 
@@ -545,7 +569,7 @@ class ClientAPI:
             return self.jsonres({error:'u value missing'})
 
         result = dict(processed=0, scheduled=0)
-        hq.discovered([p])
+        hq.discovered(job, [p])
         result.update(processed=1)
         db.connection.end_request()
         return self.jsonres(result)
