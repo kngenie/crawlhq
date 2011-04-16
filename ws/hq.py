@@ -16,7 +16,7 @@ from cfpgenerator import FPGenerator
 from urlparse import urlsplit, urlunsplit
 import threading
 import random
-from Queue import Queue
+from Queue import Queue, Empty
 import atexit
 
 urls = (
@@ -109,154 +109,482 @@ class seen_ud(object):
         return self.hosthash(host)
     def keyhost(self, k):
         return k['H']
-    def uriquery(self, k):
+    # name is incorrect
+    def keyquery(self, k):
         # in sharded environment, it is important to have shard key in
         # a query. also it is necessary for non-multi update to work.
         return {'fp':self.keyfp(k), 'u.u1':k['u1'], 'u.h':k['h']}
+    # old and incorrect name
+    uriquery = keyquery
 
-class WorkSet(object):
-    def __init__(self, job, id):
-        self.job = job
-        self.id = id
-        self.coll = db.jobs[self.job]
 
-    def reset(self):
-        e = self.coll.update(
-            {'co':{'$gt': 0}, 'fp':self.id},
-            {'$set':{'co':0}},
-            multi=True, safe=True)
-        return e
-            
-    # only safe for single thread per work set
-    def dequeue1(self):
-        f = dict(co=0, fp=self.id)
-        o = self.coll.find_one(f)
-        if o:
-            self.coll.update({'_id':o['_id']},
-                             {'$set':{'co':time.time()}},
-                             upsert=False,
-                             multi=False)
-            return o
-        else:
-            return None
-
-    # safe for multi-threaded access to a work set. not used because
-    # findAndModify's performance drops sharply when there are multiple
-    # matches for the criteria (mongodb 1.6.5)
-    def dequeue1_fam(self):
-        f = {'co':0, 'fp':self.id}
-        result = db.command('findAndModify', self.coll.name,
-                            query=f,
-                            update={'$set':{'co': time.time()}},
-                            upsert=False,
-                            allowable_errors=['No matching object found'])
-        if result['ok'] != 0:
-            return result['value']
-        else:
-            return None
-
-    
-class ClientQueue(object):
-    def __init__(self, job, worksets):
-        self.job = job
-        self.worksets = [WorkSet(job, id) for id in worksets]
-        # persistent index into worksets
-        self.next = 0
-
-    def reset(self):
-        result = dict(ws=0, ok=True)
-        for ws in self.worksets:
-            e = ws.reset()
-            result['ws'] += 1
-            result['ok'] = result['ok'] and (e['ok'] == 1)
-        # FIXME returning more useful info
-        return result
-
-    def feed(self, n):
-        count = n
-        excount = len(self.worksets)
-        r = []
-        while len(r) < n and excount > 0:
-            if self.next >= len(self.worksets): self.next = 0
-            curi = self.worksets[self.next].dequeue1()
-            self.next += 1
-            if curi:
-                excount = len(self.worksets)
-                r.append(curi)
-            else:
-                excount -= 1
-        return r
-        
-class Scheduler(seen_ud):
-    '''per job scheduler'''
-    def __init__(self, job):
-        self.job = job
-        self.clients = {}
-        self.queue = db.jobs[self.job]
-        
-        self.insert_queue = Queue(10000)
+class ThreadPoolExecutor(object):
+    '''thread pool executor with fixed number of threads'''
+    def __init__(self, poolsize=15, queuesize=5000):
+        self.poolsize = poolsize
+        self.queuesize = queuesize
+        self.work_queue = Queue(self.queuesize)
+        self.__shutdown = False
         self.workers = [
-            threading.Thread(target=self.work,
-                            name="insert_worker%d" % i)
-            for i in range(6)
+            threading.Thread(target=self._work, name="poolthread-%d" % i)
+            for i in range(self.poolsize)
             ]
         for th in self.workers:
             th.setDaemon(True)
             th.start()
-    
-    NQUEUES = 4096
 
-    def work(self):
+    def __del__(self):
+        self.shutdown()
+
+    def shutdown(self):
+        if self.__shutdown: return
+        print >>sys.stderr, "ThreadPoolExecutor(%s) shutting down" % id(self)
+        self.__shutdown = True
+        def NOP(): pass
+        for th in self.workers:
+            self.work_queue.put((NOP,[]))
+        for th in self.workers:
+            # wait up to 5 secs for thread to terminate (too long?)
+            th.join(5.0)
+
+    def _work(self):
         while 1:
+            f, args = None, None
             try:
-                c = self.insert_queue.get()
-                if c and len(c) >= 1:
-                    c[0](*c[1:])
-            except:
-                pass
+                f, args = self.work_queue.get()
+                f(*args)
+            except Exception as ex:
+                print >>sys.stderr, "work error:%s%s -> %s" % (f, args, ex)
+            if self.__shutdown:
+                break
+
+    def execute(self, f, *args):
+        self.work_queue.put((f, args))
+
+    def __call__(self, f, *args):
+        self.work_queue.put((f, args))
+        
+class WorkSet(seen_ud):
+    SCHEDULE_SPILL_SIZE = 30000
+    SCHEDULE_MAX_SIZE = 50000
+    SCHEDULE_LOW = 160
+    def __init__(self, job, id):
+        self.job = job
+        self.id = id
+        self.seen = db.seen
+        # scheduled CURIs
+        self.scheduled = Queue(maxsize=self.SCHEDULE_MAX_SIZE)
+        self.loadlock = threading.RLock()
+        self.loading = False
+        self.activelock = threading.RLock()
+        self.active = {}
+        self.running = False
+        #self.load_if_low()
+
+    def is_active(self, url):
+        with self.activelock:
+            return url in self.active
+    def add_active(self, curi):
+        with self.activelock:
+            self.active[self.keyurl(curi['u'])] = curi
+    def remove_active(self, curi):
+        with self.activelock:
+            self.active.pop(self.keyurl(curi['u']), None)
+    def remove_active_uri(self, url):
+        '''same as remove_active, but by raw URI'''
+        with self.activelock:
+            self.active.pop(url, None)
+
+    def scheduledcount(self):
+        return self.scheduled.qsize()
+    def activecount(self):
+        return len(self.active)
+
+    def reset(self):
+        self.running = False
+        with self.activelock:
+            for o in self.active.values():
+                o['co'] = 0
+        self.unload()
+        # reset those checkedout CURIs in the database
+        e = self.seen.update(
+            {'co':{'$gt': 0}, 'ws':self.id},
+            {'$set':{'co':0}},
+            multi=True, safe=True)
+        return e
+            
+    def checkout(self, n):
+        self.running = True
+        r = []
+        while len(r) < n:
+            try:
+                o = self.scheduled.get(block=False)
+                o['co'] = int(time.time())
+                r.append(o)
+            except Empty:
+                break
+        self.load_if_low()
+        return r
+
+    def load_if_low(self):
+        with self.loadlock:
+            if self.loading: return
+            if self.scheduled.qsize() < self.SCHEDULE_LOW:
+                self.loading = True
+                executor.execute(self._load)
+
+    def _load(self):
+        t0 = time.time()
+        l = []
+        try:
+            qfind = dict(co=0, ws=self.id)
+            cur = self.seen.find(qfind, limit=self.SCHEDULE_LOW)
+            for o in cur:
+                self.scheduled.put(o)
+                self.add_active(o)
+                l.append(o)
+            for o in l:
+                qup = dict(_id=o['_id'], fp=o['fp'])
+                self.seen.update(qup, {'$set':{'co':1}},
+                                 upsert=False, multi=False)
+                o['co'] = 1
+        finally:
+            with self.loadlock: self.loading = False
+            # release connection
+            db.connection.end_request()
+        print >>sys.stderr, "WorkSet(%s,%d)._load: %d in %.2fs" % \
+            (self.job, self.id, len(l), (time.time()-t0))
+
+    def unload(self):
+        '''discards all CURIs in scheduled queue'''
+        self.running = False
+        # TODO: support partial unload (spilling), do proper synchronization
+        qsize = self.scheduled.qsize()
+        print >>sys.stderr, "WS(%d).unload: flushing %d URIs" % \
+            (self.id, qsize)
+        while qsize > 0:
+            try:
+                o = self.scheduled.get(block=False)
+                qsize -= 1
+            except Empty:
+                break
+        with self.activelock:
+            while self.active:
+                url, curi = self.active.popitem()
+                db.seen.save(curi)
+
+    def schedule(self, curi):
+        curi['ws'] = self.id
+        curi['co'] = 0
+        if not self.running or self.scheduled.full():
+            #print >>sys.stderr, "WS(%d) scheduled is full, saving into database" % (self.id,)
+            self.seen.save(curi)
+            return False
+        else:
+            curi['co'] = 1
+            self.scheduled.put(curi)
+            with self.activelock:
+                self.active[self.keyurl(curi['u'])] = curi
+            #self.seen.save(curi)
+            return True
+    
+    def _update_seen(self, curi, expire):
+        '''updates seen database from curi from finished event.'''
+        # curi['u'] is a raw URI, and curi['id'] may or may not exist
+        uk = self.urlkey(curi['u'])
+        # there's no real need for unsetting 'ws'
+        updates = {
+            '$set':{
+                    'a': curi['a'], 'f': curi['f'], 'e': expire,
+                    'u': uk,
+                    'co': -1
+                    },
+            '$unset':{'w':1, 'ws': 1}
+            }
+        if 'id' in curi:
+            flt = {'_id': bson.objectid.ObjectId(curi['id']),
+                   'fp': uk['fp']}
+        else:
+            flt = self.keyquery(uk)
+        #print >>sys.stderr, "flt=%s update=%s" % (flt, update)
+        self.seen.update(flt,
+                         updates,
+                         multi=False, upsert=True)
+        #print >>sys.stderr, '_update_seen:%s' % e
+
+    def deschedule(self, furi, expire=None):
+        '''note: furi['u'] is original raw URI.'''
+        finished = furi.get('f')
+        if finished is None:
+            finished = furi['f'] = int(time.time())
+        if expire is None:
+            # seen status expires after 2 months
+            # TODO: allow custom expiration per job/domain/URI
+            expire =  finished + 60 * 24 * 3600
+        t0 = time.time()
+        # update database with crawl result
+        self._update_seen(furi, expire)
+        #print >>sys.stderr, "update_seen %f" % (time.time() - t0)
+        self.remove_active_uri(furi['u'])
+        
+class ClientQueue(seen_ud):
+    CHECKEDOUT_SPILL_SIZE = 10000
+
+    def __init__(self, job, worksets):
+        self.job = job
+        self.worksets = worksets
+        if len(self.worksets) == 0:
+            print >>sys.stderr, "%s: no worksets" % self
+        # persistent index into worksets
+        self.next = 0
+        self.feedcount = 0
+
+        ## checkedout caches CURIs scheduled for this client until they are
+        ## flushed to the database (they are likely be removed before getting
+        ## flushed). it is used for in-memory seen check and flushing
+        #self.checkedout = {}
+        ## mutex for manipulating self.checkedout
+        #self.colock = threading.RLock()
+        #self.spilling = False
+        ## mutex for self.spilling flag
+        #self.spilllock = threading.RLock()
+
+    #def enough_room(self):
+    #    return len(self.checkedout) < (self.CHECKEDOUT_SPILL_SIZE - 500)
+
+    def get_status(self):
+        r = dict(feedcount=self.feedcount,
+                 next=self.next,
+                 worksetcount=len(self.worksets))
+        scheduledcount = 0
+        activecount = 0
+        for ws in self.worksets:
+            scheduledcount += ws.scheduledcount()
+            activecount += ws.activecount()
+        r['scheduledcount'] = scheduledcount
+        r['activecount'] = activecount
+        return r
+        
+    #def is_active(self, url):
+    #    return url in self.checkedout
+            
+    def reset(self):
+        # TODO: return something more useful for diagnosing failures
+        result = dict(ws=[], ok=True)
+        for ws in self.worksets:
+            ws.reset()
+            result['ws'].append(ws.id)
+        return result
+
+    def flush_scheduled(self):
+        for ws in self.worksets:
+            ws.unload()
+
+    # unused - merge into WorkSet.unload()
+    def spill_checkedout(self, exh=False):
+        with self.spilllock:
+            if self.spilling: return
+            self.spilling = True
+        try:
+            with self.colock:
+                while self.checkedout:
+                    (k, o) = self.checkedout.popitem()
+                    o['co'] = 0
+                    # TODO: should push back to workset's scheduled queue,
+                    # rather than into database.
+                    db.seen.save(o)
+                    if not exh and self.enough_room():
+                        break
+        finally:
+            db.connection.end_request()
+            with self.spilllock:
+                self.spilling = False
+
+    #def clear_checkedout(self, uri):
+    #    with self.colock:
+    #        cocuri = self.checkedout.pop(uri, None)
+    #    return cocuri
+
+    def feed(self, n):
+        checkout_per_ws = n // 4 + 1
+        r = []
+        for a in (1, 2, 3):
+            excount = len(self.worksets)
+            while len(r) < n and excount > 0:
+                if self.next >= len(self.worksets): self.next = 0
+                curis = self.worksets[self.next].checkout(checkout_per_ws)
+                self.next += 1
+                if curis:
+                    excount = len(self.worksets)
+                    r.extend(curis)
+                else:
+                    excount -= 1
+            if len(r) > 0: break
+            # wait a while - if we don't, client may call again too soon,
+            # keeping HQ too busy responding to feed request to fill the
+            # queue.
+            time.sleep(0.5)
+            
+        #with self.colock:
+        #    for curi in curis:
+        #        self.checkedout[self.keyurl(curi['u'])] = curi
+        #if len(self.checkedout) > self.CHECKEDOUT_SPILL_SIZE:
+        #    executor.execute(self.spill_checkedout)
+        self.feedcount += len(r)
+        return r
+        
+class Scheduler(seen_ud):
+    '''per job scheduler. manages assignment of worksets to each client.'''
+    #NWORKSETS = 4096
+    NWORKSETS = 256
+    NWORKSETS_BITS = 8
+    
+    def __init__(self, job):
+        self.job = job
+        self.clients = {}
+        #self.queue = db.jobs[self.job]
+        self.seen = db.seen
+        self.get_jobconf()
+
+        self.worksets = [WorkSet(job, id) for id in xrange(self.NWORKSETS)]
+        self.load_workset_assignment()
+        
+    def get_status(self):
+        r = dict(
+            nworksets=self.NWORKSETS,
+            clients={}
+            )
+        for i, client in self.clients.items():
+            r['clients'][i] = client.get_status()
+        return r
+
+    def get_jobconf(self):
+        self.jobconf = db.jobconfs.find_one({'name':self.job})
+        if self.jobconf is None:
+            self.jobconf = {'name':self.job}
+            db.jobconfs.save(self.jobconf)
+            
+    def create_default_workset_assignment(self):
+        num_nodes = self.jobconf.get('nodes', 20)
+        return list(itertools.islice(
+                itertools.cycle(xrange(num_nodes)),
+                0, len(self.worksets)))
+        
+    def load_workset_assignment(self):
+        r = db.jobconfs.find_one({'name':self.job}, {'wscl':1})
+        wscl = self.jobconf.get('wscl')
+        if wscl is None:
+            wscl = self.create_default_workset_assignment()
+            self.jobconf['wscl'] = wscl
+            db.jobconfs.save(self.jobconf)
+        if len(wscl) > len(self.worksets):
+            wscl[len(self.worksets):] = ()
+        elif len(wscl) < len(self.worksets):
+            wscl.extend(itertools.repeat(None, len(self.worksets)-len(wscl)))
+        self.worksetclient = wscl
 
     def get_clientqueue(self, client):
         q = self.clients.get(client[0])
         if q is None:
-            q = ClientQueue(self.job, self.wsidforclient(client))
+            worksets = [self.worksets[i] for i in self.wsidforclient(client)]
+            q = ClientQueue(self.job, worksets)
             self.clients[client[0]] = q
         return q
 
     def wsidforclient(self, client):
         '''return list of workset ids for node name of nodes-node cluster'''
-        qids = range(client[0], self.NQUEUES, client[1])
-        #random.shuffle(qids)
+        qids = [i for i in xrange(len(self.worksetclient))
+                if self.worksetclient[i] == client[0]]
         return qids
 
     def workset(self, hostfp):
-        return hostfp >> (63-12)
+        # don't use % (mod) - FP has much less even distribution in
+        # lower bits.
+        return hostfp >> (63 - self.NWORKSETS_BITS)
+
+    # Scheduler - discovered event
 
     def schedule(self, curi):
-        curi.pop('c', None)
-        curi.pop('e', None)
-        curi['co'] = 0
-        curi['fp'] = self.workset(curi['fp'])
-        #self.queue.save(curi)
-        self.insert_queue.put([self.queue.save, curi])
+        ws = self.workset(curi['fp'])
+        return self.worksets[ws].schedule(curi)
 
-    def deschedule(self, curi):
-        '''remove curi from workset'''
-        if 'id' in curi:
-            self.queue.remove({'_id':bson.objectid.ObjectId(curi['id'])})
+    def _schedule_unseen(self, incuri):
+        '''schedule_unseen to be executed asynchronously'''
+        uk = self.urlkey(incuri['u'])
+        q = self.keyquery(uk)
+        expire = incuri.get('e')
+
+        wsid = self.workset(q['fp'])
+        if self.worksets[wsid].is_active(incuri['u']):
+            return False
+
+        t0 = time.time()
+        curi = self.seen.find_one(q)
+        #print >>sys.stderr, "seen.find_one:%.3f" % (time.time() - t0,)
+        if curi is None:
+            curi = dict(u=uk, fp=q['fp'])
+            if expire is not None:
+                curi['e'] = expire
+            curi['w'] = dict(p=incuri.get('p'), v=incuri.get('v'),
+                             x=incuri.get('x'))
+            self.schedule(curi)
+            return True
         else:
-            self.queue.remove(self.uriquery(curi['u']))
+            if 'w' in curi: return False
+            if expire is not None:
+                curi['e'] = expire
+            if curi.get('e', sys.maxint) < time.time():
+                curi['w'] = dict(p=incuri.get('p'), v=incuri.get('v'),
+                                 x=incuri.get('x'))
+                self.schedule(curi)
+                return True
+            return False
+
+    def schedule_unseen(self, incuri):
+        '''schedule incuri if not crawled recently'''
+        executor.execute(self._schedule_unseen, incuri)
+        return True
+
+    # Scheduler - finished event
+
+    def deschedule(self, furi, expire=None):
+        k = self.urlkey(furi['u'])
+        wsid = self.workset(self.keyfp(k))
+        self.worksets[wsid].deschedule(furi)
+        
+    # Scheduler - feed request
 
     def feed(self, client, n):
         return self.get_clientqueue(client).feed(n)
 
+    # Scheduler - reset request
+
     def reset(self, client):
         return self.get_clientqueue(client).reset()
+
+    def flush_clients(self):
+        # actually this can be done without going through ClientQueues
+        #for cl in self.clients.values():
+        #    cl.flush_scheduled()
+        for ws in self.worksets:
+            ws.unload()
         
-class IncomingQueue(object):
-    def __init__(self, job, hq):
+class IncomingQueue(ThreadPoolExecutor):
+    def __init__(self, job, scheduler):
+        '''scheduler: Scheduler for job'''
+        ThreadPoolExecutor.__init__(self, poolsize=5, queuesize=50)
         self.job = job
-        self.hq = hq
+        self.scheduler = scheduler
         self.coll = db.inq[self.job]
+        self.addedcount = 0
+        self.processedcount = 0
+
+        self.rmcount = 0
+
+    def get_status(self):
+        return dict(addedcount=self.addedcount,
+                    processedcount=self.processedcount,
+                    workqueuesize=self.work_queue.qsize())
 
     def add(self, curis):
         result = dict(processed=0)
@@ -266,14 +594,19 @@ class IncomingQueue(object):
                 # this takes 2x longer
                 for curi in curis:
                     self.coll.insert(curi)
+            elif False:
+                self.coll.insert(dict(d=curis, done=0))
             else:
-                self.coll.insert(dict(d=curis))
+                self.coll.update({'done':1},
+                                 {'$set':{'d':curis, 'done':0}},
+                                 multi=False, upsert=True)
             result['processed'] = len(curis)
+            self.addedcount += result['processed']
         else:
             # schedule immediately
             for curi in curis:
                 result['processed'] += 1
-                if self.hq.schedule_unseen(self.job, curi):
+                if self.scheduler.schedule_unseen(curi):
                     result['scheduled'] += 1
         return result
                                      
@@ -295,15 +628,25 @@ class IncomingQueue(object):
             else:
                 yield e
 
+    def _remove_done(self):
+        self.coll.remove({'done':1})
+
     def getinq_f1(self, result, maxn):
-        '''getinq with fine_one and remove. not thread safe, but faster
+        '''getinq with find_one and update. not thread safe, but faster
         with large collection.'''
+        result.update(inq=0, processed=0, td=0.0)
         while result['processed'] < maxn:
             start = time.time()
-            e = self.coll.find_one()
+            e = self.coll.find_one({'done':{'$ne':1}})
             if e is None:
                 break
-            self.coll.remove({'_id':e['_id']})
+            #self.coll.remove({'_id':e['_id']})
+            self.coll.update({'_id':e['_id']}, {'$set':{'done':1}},
+                             upsert=False, multi=False)
+            self.rmcount += 1
+            if self.rmcount > 100:
+                self.execute(self._remove_done)
+                self.rmcount = 0
             result['td'] += (time.time() - start)
             result['inq'] += 1
             if 'd' in e:
@@ -327,13 +670,14 @@ class IncomingQueue(object):
             result['inq'] += 1
             if 'd' in e:
                 for curi in e['d']:
+                    print >>sys.stderr, str(curi)
                     yield curi
             else:
                 yield e
         
     getinq = getinq_f1
 
-    def process(self, maxn):
+    def process_0(self, maxn):
         '''process curis queued'''
         result = dict(inq=0, processed=0, scheduled=0, td=0.0, ts=0.0,
                       tu=0.0)
@@ -341,12 +685,40 @@ class IncomingQueue(object):
         for curi in self.getinq(result, maxn):
             result['processed'] += 1
             t0 = time.time()
-            if self.hq.schedule_unseen(self.job, curi):
+            if self.scheduler.schedule_unseen(curi):
                 result['scheduled'] += 1
                 result['ts'] += (time.time() - t0)
             else:
                 result['tu'] += (time.time() - t0)
+            self.processedcount += 1
 
+        return result
+
+    def _process(self, bucket):
+        result = dict(processed=0, scheduled=0, t=0.0)
+        t0 = time.time()
+        for duri in bucket:
+            result['processed'] += 1
+            if self.scheduler._schedule_unseen(duri):
+                result['scheduled'] += 1
+            self.processedcount += 1
+        result['t'] = time.time() - t0
+        print >>sys.stderr, "IncomingQueue._process:%s" % result
+
+    def process(self, maxn):
+        '''schedule_unseen CURIs queued'''
+        result = dict(processed=0, buckets=0)
+        bucket = []
+        for duri in self.getinq(result, maxn):
+            result['processed'] += 1
+            bucket.append(duri)
+            if len(bucket) >= 50:
+                result['buckets'] += 1
+                self.execute(self._process, bucket)
+                bucket = []
+        if len(bucket) > 0:
+            result['buckets'] += 1
+            self.execute(self._process, bucket)
         return result
 
 class Headquarters(seen_ud):
@@ -354,11 +726,17 @@ class Headquarters(seen_ud):
         self.schedulers = {}
         self.incomingqueues = {}
 
+    def shutdown(self):
+        for inq in self.incomingqueues.values():
+            inq.shutdown()
+
     def get_inq(self, job):
         inq = self.incomingqueues.get(job)
         if inq is None:
-            inq = IncomingQueue(job, self)
+            jsch = self.get_scheduler(job)
+            inq = IncomingQueue(job, jsch)
             self.incomingqueues[job] = inq
+        #print >>sys.stderr, "inq=%d" % id(inq)
         return inq
 
     def get_scheduler(self, job):
@@ -368,90 +746,29 @@ class Headquarters(seen_ud):
             self.schedulers[job] = jsch
         return jsch
 
+    # Headquarter - discovery
+
     def schedule(self, job, curi):
         self.get_scheduler(job).schedule(curi)
 
-    def schedule_unseen(self, job, curi):
-        uri = curi['u']
-        path = curi.get('p')
-        via = curi.get('v')
-        context = curi.get('x')
-        expire = curi.get('e')
+    def discovered(self, job, curis):
+        return self.get_inq(job).add(curis)
 
-        '''schedules uri if not "seen" (or seen status has expired)
-        in current implemtation, seeds (path='') are scheduled
-        regardless of "seen" status.
-        uri: string'''
-        # check with seed list - use of find_and_modify prevents
-        # the same URI being submitted concurrently from being scheduled
-        # as well. with new=True, find_and_modify() returns updated
-        # (newly created) object.
-        uk = self.urlkey(uri)
-        t0 = time.time()
-        if False:
-            update={'$set':{'u':uk, 'fp':self.keyfp(uk)}, '$inc':{'c':1}}
-            if expire is not None:
-                update['$set']['e'] = expire
-            result = db.command('findAndModify', 'seen',
-                                query=self.uriquery(uk),
-                                update=update,
-                                upsert=True,
-                                new=True)
-            curi = result['value']
-            isnew = (curi['c'] == 1)
-            # TODO: check result.ok
-        else:
-            q = self.uriquery(uk)
-            curi = db.seen.find_one(q)
-            if curi is None:
-                curi = {'u':uk, 'fp':q['fp']}
-                if expire is not None:
-                    curi['e'] = expire
-                db.seen.insert(curi)
-                isnew = True
-            else:
-                if expire is not None:
-                    curi['e'] = expire
-                isnew = False
-        #print >>sys.stderr, "seencheck:%ss" % (time.time()-t0)
-        if isnew or curi.get('e', sys.maxint) < time.time():
-            t1 = time.time()
-            curi.update(p=path, v=via, x=context)
-            self.schedule(job, curi)
-            # this shows while most schedule take < 1ms, some take >8s.
-            #print >>sys.stderr, "schedule:%ss" % (time.time()-t1)
-            return True
+    def processinq(self, job, maxn):
+        '''process incoming queue for job. maxn parameter advicse
+        upper limit on numbe of URIs processed in this single call.
+        number of actually processed URIs may exceed it if incoming
+        queue is storing URIs in chunks.'''
+        # process calls Schdule.schedule_unseen() on each URI
+        return self.get_inq(job).process(maxn)
 
-        return False
+    # Headquarter - feed
 
-    def _update_seen(self, curi, expire):
-        '''updates seen database with data specified'''
-        update = {'a': curi['a'], 'f': curi['f'], 'e': expire,
-                  'u': curi['u']} #, 'fp': self.keyfp(curi['u'])}
-        if 'id' in curi:
-            flt = {'_id': bson.objectid.ObjectId(curi['id'])}
-        else:
-            flt = self.uriquery(curi['u'])
-        #print >>sys.stderr, "flt=%s update=%s" % (flt, update)
-        e = db.seen.update(flt,
-                           {'$set': update},
-                           multi=False, upsert=True, safe=False)
-        #print >>sys.stderr, 'update_seen:%s' % e
-
-    def update_seen(self, curi, expire=None):
-        finished = curi.get('f')
-        if finished is None:
-            finished = curi['f'] = int(time.time())
-        if expire is None:
-            # seen status expires after 2 months
-            # TODO: allow custom expiration per job/domain/URI
-            expire =  finished + 60 * 24 * 3600
-        t0 = time.time()
-        self._update_seen(curi, expire)
-        #print >>sys.stderr, "update_seen %f" % (time.time() - t0)
-            
     def makecuri(self, o):
-        curi = dict(u=self.keyurl(o['u']), id=str(o['_id']), p=o.get('p',''))
+        # note that newly discovered CURI would not have _id if they got
+        # scheduled to the WorkSet directly
+        curi = dict(u=self.keyurl(o['u']), p=o.get('p',''))
+        if '_id' in o: curi['id'] = str(o['_id'])
         for k in ('v', 'x', 'a', 'fp'):
             if k in o: curi[k] = o[k]
         return curi
@@ -461,31 +778,23 @@ class Headquarters(seen_ud):
         return [self.makecuri(u) for u in curis]
         
     def finished(self, job, curis):
-        '''curis has 'u' has original URL, not in db key format'''
+        '''curis 'u' has original URL, not in db key format'''
         jsch = self.get_scheduler(job)
         result = dict(processed=0)
         for curi in curis:
-            curi['u'] = self.urlkey(curi['u'])
+            #curi['u'] = self.urlkey(curi['u'])
             jsch.deschedule(curi)
-            self.update_seen(curi)
             result['processed'] += 1
         return result
-
-    def discovered(self, job, curis):
-        return self.get_inq(job).add(curis)
 
     def reset(self, job, client):
         return self.get_scheduler(job).reset(client)
 
-    def processinq(self, job, maxn):
-        '''process incoming queue for job. maxn parameter advicse
-        upper limit on numbe of URIs processed in this single call.
-        number of actually processed URIs may exceed it if incoming
-        queue is storing URIs in chunks.'''
-        return self.get_inq(job).process(maxn)
+    def flush(self, job):
+        return self.get_scheduler(job).flush_clients()
 
     def seen(self, url):
-        return db.seen.find_one(self.uriquery(self.urlkey(url)))
+        return db.seen.find_one(self.keyquery(self.urlkey(url)))
 
     def rehash(self, job):
         result = dict(seen=0, jobs=0)
@@ -503,7 +812,18 @@ class Headquarters(seen_ud):
                 db.jobs[job].save(u)
                 result['jobs'] += 1
 
+    def get_status(self, job):
+        r = dict(job=job, hq=id(self))
+        sch = self.schedulers.get(job)
+        r['sch'] = sch and sch.get_status()
+        inq = self.incomingqueues.get(job)
+        r['inq'] = inq and inq.get_status()
+        return r
+
+executor = ThreadPoolExecutor(poolsize=10)
 hq = Headquarters()
+atexit.register(executor.shutdown)
+atexit.register(hq.shutdown)
 
 class ClientAPI:
     def __init__(self):
@@ -511,7 +831,7 @@ class ClientAPI:
         pass
     def GET(self, job, action):
         if action in ('feed', 'ofeed', 'reset', 'processinq', 'setupindex',
-                      'rehash', 'seen'):
+                      'rehash', 'seen', 'rediscover', 'status', 'flush'):
             return self.POST(job, action)
         else:
             web.header('content-type', 'text/html')
@@ -615,11 +935,11 @@ class ClientAPI:
         
         result.update(t=(time.time() - start))
         db.connection.end_request()
-        print >>sys.stderr, "processinq %s" % result
+        #print >>sys.stderr, "processinq %s" % result
         return self.jsonres(result)
 
     def do_feed(self, job):
-        p = web.input(n=5, name=0, nodes=1)
+        p = web.input(n=5, name=None, nodes=1)
         name, nodes, count = int(p.name), int(p.nodes), int(p.n)
         if count < 1: count = 5
 
@@ -630,12 +950,13 @@ class ClientAPI:
         db.connection.end_request()
         print >>sys.stderr, "feed %s/%s %s in %.4fs" % (
             name, nodes, len(r), time.time() - start)
+        #print >>sys.stderr, str(r)
         web.header('content-type', 'text/json')
         return self.jsonres(r)
 
     def do_reset(self, job):
         '''resets URIs' check-out state, make them schedulable to crawler'''
-        p = web.input(name=None, nodes=None)
+        p = web.input(name=None, nodes=1)
         name = int(p.name)
         nodes = int(p.nodes)
         r = dict(name=name, nodes=nodes)
@@ -649,6 +970,13 @@ class ClientAPI:
         # TODO: return number of URIs reset
         return self.jsonres(r)
 
+    def do_flush(self, job):
+        '''flushes cached objects into database for safe shutdown'''
+        hq.flush(job)
+        db.connection.end_request()
+        r = dict(ok=1)
+        return self.jsonres(r)
+
     def do_seen(self, job):
         p = web.input()
         u = hq.seen(p.u)
@@ -658,14 +986,21 @@ class ClientAPI:
         db.connection.end_request()
         return self.jsonres(result)
 
+    def do_status(self, job):
+        r = hq.get_status(job)
+        if executor:
+            r['workqueuesize'] = executor.work_queue.qsize()
+        return self.jsonres(r)
+
     def do_test(self, job):
         web.debug(web.data())
         return str(web.ctx.env)
 
     def do_setupindex(self, job):
         db.seen.ensure_index([('u.u1', 1), ('u.h', 1)])
-        db.jobs[job].ensure_index([('u.u1', 1), ('u.h', 1)])
-        db.jobs[job].ensure_index([('co', 1), ('fp', 1)])
+        db.seen.ensure_index([('co', 1), ('ws', 1)])
+        #db.jobs[job].ensure_index([('u.u1', 1), ('u.h', 1)])
+        #db.jobs[job].ensure_index([('co', 1), ('fp', 1)])
 
         r = dict(job=job, action='setupindex', sucess=1)
         return self.jsonres(r)
