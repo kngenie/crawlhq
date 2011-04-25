@@ -17,6 +17,7 @@ from urlparse import urlsplit, urlunsplit
 import threading
 import random
 from Queue import Queue, Empty
+import traceback
 import atexit
 
 urls = (
@@ -27,11 +28,10 @@ app = web.application(urls, globals())
 if 'mongo' not in globals():
     mongo = pymongo.Connection(host='localhost', port=27017)
 db = mongo.crawl
-#mongo = hqdb.get_connection()
-#db = mongo.crawl
 atexit.register(mongo.disconnect)
 
 _fp12 = FPGenerator(0xE758000000000000, 12)
+_fp31 = FPGenerator(0xBA75BB4300000000, 31)
 _fp32 = FPGenerator(0x9B6C9A2F80000000, 32)
 _fp63 = FPGenerator(0xE1F8D6B3195D6D97, 63)
 _fp64 = FPGenerator(0xD74307D3FD3382DB, 64)
@@ -85,7 +85,8 @@ class seen_ud(object):
         return ("#%x" % (_fp32.fp(s) >> 32))
     def hosthash(self, h):
         # mongodb can only handle upto 64bit signed int
-        return (_fp63.fp(h) >> 1)
+        #return (_fp63.fp(h) >> 1)
+        return int(_fp31.fp(h) >> 33)
 
     def urlkey(self, url):
         k = {}
@@ -130,7 +131,7 @@ class ThreadPoolExecutor(object):
             for i in range(self.poolsize)
             ]
         for th in self.workers:
-            th.setDaemon(True)
+            th.daemon = True
             th.start()
 
     def __del__(self):
@@ -152,9 +153,11 @@ class ThreadPoolExecutor(object):
             f, args = None, None
             try:
                 f, args = self.work_queue.get()
+                #print >>sys.stderr, "work starting %s%s" % (f, args)
                 f(*args)
             except Exception as ex:
-                print >>sys.stderr, "work error:%s%s -> %s" % (f, args, ex)
+                print >>sys.stderr, "work error in %s%s" % (f, args)
+                traceback.print_exc()
             if self.__shutdown:
                 break
 
@@ -168,9 +171,9 @@ class WorkSet(seen_ud):
     SCHEDULE_SPILL_SIZE = 30000
     SCHEDULE_MAX_SIZE = 50000
     SCHEDULE_LOW = 160
-    def __init__(self, job, id):
+    def __init__(self, job, wsid):
         self.job = job
-        self.id = id
+        self.id = wsid
         self.seen = db.seen
         # scheduled CURIs
         self.scheduled = Queue(maxsize=self.SCHEDULE_MAX_SIZE)
@@ -179,8 +182,21 @@ class WorkSet(seen_ud):
         self.activelock = threading.RLock()
         self.active = {}
         self.running = False
-        #self.load_if_low()
 
+    def get_status(self):
+        def is_locked(lock):
+            acquired = lock.acquire(blocking=False)
+            if acquired: lock.release()
+            return not acquired
+        r = dict(id=self.id, scheduledcount=self.scheduled.qsize(),
+                 loading=self.loading,
+                 activecount=len(self.active),
+                 running=self.running,
+                 loadlock=is_locked(self.loadlock),
+                 activelock=is_locked(self.activelock)
+                 )
+        return r
+                 
     def is_active(self, url):
         with self.activelock:
             return url in self.active
@@ -274,6 +290,7 @@ class WorkSet(seen_ud):
                 db.seen.save(curi)
 
     def schedule(self, curi):
+        #print >>sys.stderr, "WorkSet.schedule(%s)" % curi
         curi['ws'] = self.id
         curi['co'] = 0
         if not self.running or self.scheduled.full():
@@ -356,11 +373,14 @@ class ClientQueue(seen_ud):
         r = dict(feedcount=self.feedcount,
                  next=self.next,
                  worksetcount=len(self.worksets))
+        worksets = []
         scheduledcount = 0
         activecount = 0
         for ws in self.worksets:
+            worksets.append(ws.id)
             scheduledcount += ws.scheduledcount()
             activecount += ws.activecount()
+        r['worksets'] = worksets
         r['scheduledcount'] = scheduledcount
         r['activecount'] = activecount
         return r
@@ -436,13 +456,13 @@ class ClientQueue(seen_ud):
 class Scheduler(seen_ud):
     '''per job scheduler. manages assignment of worksets to each client.'''
     #NWORKSETS = 4096
-    NWORKSETS = 256
     NWORKSETS_BITS = 8
+    #NWORKSETS = 256
+    NWORKSETS = 1 << NWORKSETS_BITS
     
     def __init__(self, job):
         self.job = job
         self.clients = {}
-        #self.queue = db.jobs[self.job]
         self.seen = db.seen
         self.get_jobconf()
 
@@ -456,6 +476,10 @@ class Scheduler(seen_ud):
             )
         for i, client in self.clients.items():
             r['clients'][i] = client.get_status()
+        return r
+
+    def get_workset_status(self):
+        r = [ws.get_status() for ws in self.worksets]
         return r
 
     def get_jobconf(self):
@@ -500,7 +524,7 @@ class Scheduler(seen_ud):
     def workset(self, hostfp):
         # don't use % (mod) - FP has much less even distribution in
         # lower bits.
-        return hostfp >> (63 - self.NWORKSETS_BITS)
+        return hostfp >> (31 - self.NWORKSETS_BITS)
 
     # Scheduler - discovered event
 
@@ -510,6 +534,7 @@ class Scheduler(seen_ud):
 
     def _schedule_unseen(self, incuri):
         '''schedule_unseen to be executed asynchronously'''
+        #print >>sys.stderr, "_schedule_unseen(%s)" % incuri
         uk = self.urlkey(incuri['u'])
         q = self.keyquery(uk)
         expire = incuri.get('e')
@@ -519,6 +544,7 @@ class Scheduler(seen_ud):
             return False
 
         t0 = time.time()
+        #print >>sys.stderr, "seen.find_one(%s)" % q
         curi = self.seen.find_one(q)
         #print >>sys.stderr, "seen.find_one:%.3f" % (time.time() - t0,)
         if curi is None:
@@ -588,18 +614,12 @@ class IncomingQueue(ThreadPoolExecutor):
 
     def add(self, curis):
         result = dict(processed=0)
+        now = time.time()
         if True:
             # just queue up
-            if False:
-                # this takes 2x longer
-                for curi in curis:
-                    self.coll.insert(curi)
-            elif False:
-                self.coll.insert(dict(d=curis, done=0))
-            else:
-                self.coll.update({'done':1},
-                                 {'$set':{'d':curis, 'done':0}},
-                                 multi=False, upsert=True)
+            self.coll.update({'q':0},
+                             {'$set':{'d':curis, 'q':now}},
+                             multi=False, upsert=True)
             result['processed'] = len(curis)
             self.addedcount += result['processed']
         else:
@@ -637,15 +657,15 @@ class IncomingQueue(ThreadPoolExecutor):
         result.update(inq=0, processed=0, td=0.0)
         while result['processed'] < maxn:
             start = time.time()
-            e = self.coll.find_one({'done':{'$ne':1}})
+            e = self.coll.find_one({'q':{'$gt':0}})
             if e is None:
                 break
             #self.coll.remove({'_id':e['_id']})
-            self.coll.update({'_id':e['_id']}, {'$set':{'done':1}},
+            self.coll.update({'_id':e['_id']}, {'$set':{'q':0}},
                              upsert=False, multi=False)
             self.rmcount += 1
             if self.rmcount > 100:
-                self.execute(self._remove_done)
+                #self.execute(self._remove_done)
                 self.rmcount = 0
             result['td'] += (time.time() - start)
             result['inq'] += 1
@@ -670,7 +690,7 @@ class IncomingQueue(ThreadPoolExecutor):
             result['inq'] += 1
             if 'd' in e:
                 for curi in e['d']:
-                    print >>sys.stderr, str(curi)
+                    #print >>sys.stderr, str(curi)
                     yield curi
             else:
                 yield e
@@ -699,6 +719,7 @@ class IncomingQueue(ThreadPoolExecutor):
         t0 = time.time()
         for duri in bucket:
             result['processed'] += 1
+            #print >>sys.stderr, "duri=%s" % duri
             if self.scheduler._schedule_unseen(duri):
                 result['scheduled'] += 1
             self.processedcount += 1
@@ -819,6 +840,13 @@ class Headquarters(seen_ud):
         inq = self.incomingqueues.get(job)
         r['inq'] = inq and inq.get_status()
         return r
+    def get_workset_status(self, job):
+        r = dict(job=job, hq=id(self))
+        sch = self.schedulers.get(job)
+        if sch:
+            r['sch'] = id(sch)
+            r['worksets'] = sch.get_workset_status()
+        return r
 
 executor = ThreadPoolExecutor(poolsize=10)
 hq = Headquarters()
@@ -831,7 +859,8 @@ class ClientAPI:
         pass
     def GET(self, job, action):
         if action in ('feed', 'ofeed', 'reset', 'processinq', 'setupindex',
-                      'rehash', 'seen', 'rediscover', 'status', 'flush'):
+                      'rehash', 'seen', 'rediscover', 'status', 'worksetstatus',
+                      'flush'):
             return self.POST(job, action)
         else:
             web.header('content-type', 'text/html')
@@ -990,6 +1019,10 @@ class ClientAPI:
         r = hq.get_status(job)
         if executor:
             r['workqueuesize'] = executor.work_queue.qsize()
+        return self.jsonres(r)
+
+    def do_worksetstatus(self, job):
+        r = hq.get_workset_status(job)
         return self.jsonres(r)
 
     def do_test(self, job):
