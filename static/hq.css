@@ -1,0 +1,16 @@
+.job {
+    -webkit-border-radius: 5px;
+    -moz-border-radius: 5px;
+    background-color: #ddf;
+    padding: 5px;
+}
+.jtitle {
+    font-size: 120%;
+    font-weight: bold;
+    border-bottom: 1px solid #fff;
+}
+h3 {
+    font-weight: normal;
+    margin-bottom: 2px;
+}
+

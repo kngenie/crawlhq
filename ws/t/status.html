@@ -6,39 +6,134 @@ locale.setlocale(locale.LC_ALL, 'en_US')
 <head>
 <title>Crawl Headquarters</title>
 <link rel="stylesheet" type="text/css" href="hq.css">
-<script src="/crawling/hq/jquery-1.4.4.js"></script>
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/1.5.1/jquery.js"></script>
 <style type="text/css">
+table { border-collapse:collapse; }
 td.n { text-align: right; }
 </style>
 </head>
 <body>
 <h1>Crawl Headquarters</h1>
 <div>
-<h2>Jobs</h2>
-<table border="1" style="border-collapse:collapse;">
-  <tr>
-    <th>#</th>
-    <th>name</th>
-    <th>queue length</th>
-    <th>URIs in-process</th>
-    <th>incoming queue</th>
-    <th>Ops</th>
-  </tr>
+<h2>Jobs (${len(jobs)})</h2>
 % for i, j in enumerate(jobs):
-  <tr>
-    <td>${i + 1}</td>
-    <td>${j.name}</td>
-    <td class="n">${format(j.queue.count,'n')}</td>
-    <td class="n">${format(j.queue.cocount,'n')}</td>
-    <td class="n">${format(j.queue.inqcount,'n')}</td>
-    <td><button>Reset</button><button>Enqueue</button></td>
-  </tr>
-% endfor
-</table>
-<div>${len(jobs)} ${('jobs', 'job')[len(jobs) > 1]}</div>
-<div><button>Add</button></div>
+<div class="job" jobname="${j.name}">
+  <div class="jtitle">${i+1}: ${j.name}</div>
+  <div class="jobdetail">
+    <span>Seen: ${format(j.seen, 'n')}</span>
+    <span>Inq: ${format(j.queue.inqcount, 'n')}</span>
+  </div>
+  <div>
+    <button>Reset</button>
+    <button>Flush</button>
+    <button>Seed</button>
+  </div>
+  <h3><a href="#" class="showstatus">Status</a></h3>
+  <div class="jobstatus">
+  </div>
+  <h3>Query</h3>
+  <form id="seencheck_${j.name}" class="seencheck" job="${j.name}">
+  Type URL: <input type="text" size="100" name="url" id="url">
+  <input type="submit" value="Check">
+  </form>
+  <div id="seencheckresult_${j.name}"></div>
 </div>
-<h2>Seen</h2>
-<div>${format(seen.count,'n')} entries</div>
+% endfor
+<div><button>Add Job</button></div>
+</div>
 </body>
+<script type="text/javascript">
+(function($){
+function schedule() {
+  var url = $('[name="url"]', this).val();
+  if (url) {
+    var job = getjobname(this);
+    this.disabled = true;
+    var b = this;
+    $.ajax('jobs/'+job+'/discovered', {
+      type:'POST',
+      data:{u:url},
+      dataType:'json',
+      success:function(data, status, xhr) {
+        $('#seencheckresult_'+job).html(data.scheduled ? 'scheduled'
+          : 'already seen');
+      },
+    });
+  }
+}
+function seencheck(ev) {
+  var job = getjobname(this);
+  //console.log(this);
+  var url = this.url.value;
+  if (url == "") return false;
+  if (!url.match('http://'))
+    url = 'http://' + url;
+  //console.log(url);
+  $.ajax('jobs/'+job+'/seen?u='+encodeURIComponent(url), {
+    dataType:'json',
+    success:function(data, status, xhr) {
+      //console.log(data);
+      var u = data.u;
+      if (u == null) {
+        var b = document.createElement('button');
+        $(b).html('Schedule').click(schedule);
+        $('#seencheckresult_'+job).text('not seen ').append(b);
+      } else {
+        var tbl = document.createElement('table');
+        tbl.border = '1';
+        $.each(['e','f','fp'], function() {
+          if (this in u) {
+            var tr = tbl.insertRow(-1);
+            tr.insertCell(-1).innerHTML = this;
+            tr.insertCell(-1).innerHTML = u[this];
+          }
+        });
+        $('#seencheckresult_'+job).empty().append(tbl);
+      }
+    }
+  });
+  return false;
+}
+function renderstatus(data, status, xhr) {
+  //console.log(data);
+  var d = $('.jobstatus', '.job[jobname="'+data.job+'"]');
+  d.empty();
+  d.append($(document.createElement('div'))
+      .append('WorkQueueSize: ', data.workqueuesize));
+  var inq = data.inq;
+  if (inq) {
+    d.append($(document.createElement('div'))
+	.append('IncomingQueue: added='+inq.addedcount+', processed='+
+                inq.processedcount+', workqueue='+inq.workqueuesize));
+  }
+  var sch = data.sch;
+  if (sch) {
+    var clients = sch.clients;
+    if (clients) {
+      d.append($(document.createElement('div')).html('clients:'));
+      $.each(clients, function(k, v){
+          d.append($(document.createElement('div')).addClass('client')
+            .append(k+': active='+v.activecount+', feed='+v.feedcount+
+                    ', scheduled='+v.scheduledcount+', next='+v.next+
+                    ', worksets='+v.worksetcount));
+        });
+    }
+  }
+}
+function getjobname(e) {
+  return $(e).closest('.job').attr('jobname');
+}
+function showstatus(ev) {
+  ev.preventDefault();
+  var job = getjobname(this);
+  if (!job) { alert('failed to identify job name'); return; }
+  $.ajax('jobs/'+job+'/status', {
+    dataType:'json',
+    success: renderstatus
+  });
+}
+$('.seencheck').submit(seencheck);
+$('.showstatus').click(showstatus);
+})(jQuery);
+</script>
 </html>

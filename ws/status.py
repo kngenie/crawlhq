@@ -33,13 +33,9 @@ app = web.application(urls, globals())
 def lref(name):
     # note: SCRIPT_FILENAME is only available in mod_wsgi
     if 'SCRIPT_FILENAME' not in web.ctx.environ:
-        return sys.path[0] + '/' + name
+        return os.path.join(sys.path[0], name)
     path = web.ctx.environ['SCRIPT_FILENAME']
-    p = path.rfind('/')
-    if p != -1:
-        return path[:p+1] + name
-    else:
-        return '/' + name
+    return os.path.join(os.path.dirname(path), name)
 
 class Status:
     '''implements control web user interface for crawl headquarters'''
@@ -53,18 +49,19 @@ class Status:
     def GET(self):
         jobs = [storify(j) for j in db.jobconfs.find()]
         for j in jobs:
-            qc = db.jobs[j.name].count()
+            qc = db.jobs[j.name].find({'co':{'$gte':0}}).count()
             coqc = 0 # db.jobs[j.name].find({'co':{'$gt':0}}).count()
             inqc = db.inq[j.name].count()
+            if j.name == 'wide':
+                j.seen = db.seen.count()
+            else:
+                j.seen = db.seen[j.name].count()
             j.queue = Storage(count=qc, cocount=coqc, inqcount=inqc)
 
-        seenCount =db.seen.count()
         db.connection.end_request()
         
         web.header('content-type', 'text/html')
-        return self.render('status.html',
-                    jobs=jobs,
-                    seen=Storage(count=seenCount))
+        return self.render('status.html', jobs=jobs)
 
         return html
 
@@ -72,7 +69,7 @@ class Query:
     def __init__(self):
         pass
     def GET(self, c):
-        if re.match(r'[^a-z]', c):
+        if not re.match(r'[^a-z]+$', c):
             raise web.notfound('c')
         if not hasattr(self, 'do_' + c):
             raise web.notfound('c')
