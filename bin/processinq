@@ -1,0 +1,164 @@
+#!/usr/bin/python
+#
+import sys, os
+sys.path[0:0] = (os.path.join(sys.path[0], '../lib'),)
+import re
+from pymongo import Connection
+from optparse import OptionParser
+from Queue import Queue, Empty
+from threading import Thread, Condition, RLock
+from cfpgenerator import FPGenerator
+import time
+
+opt = OptionParser(usage='%prog [OPTIONS] JOBNAME')
+opt.add_option('-d', action='store', dest='dbspec', default='localhost/crawl',
+               help='database specification: host[:port][/db]')
+opt.add_option('--test', action='store_true', dest='dryrun', default=False,
+               help='disallow any updates to the database')
+options, args = opt.parse_args()
+
+m = re.match(r'([^:]+(?::\d+))?(?:/(.+))?', options.dbspec)
+if not m:
+    print >>sys.stderr, "invalid dbspec '%s'" % options.dbspec
+    opt.print_usage()
+    exit(1)
+host = m.group(1)
+dbname = m.group(2) or 'crawl'
+if len(args) < 1:
+    print >>sys.stderr, "JOBNAME is missing"
+    opt.print_usage()
+    exit(1)
+
+job = args[0]
+
+conn = Connection(host=host)
+db = conn[dbname]
+inq = db.inq[job]
+seen = db.seen
+
+_fp12 = FPGenerator(0xE758000000000000, 12)
+_fp31 = FPGenerator(0xBA75BB4300000000, 31)
+_fp32 = FPGenerator(0x9B6C9A2F80000000, 32)
+_fp63 = FPGenerator(0xE1F8D6B3195D6D97, 63)
+_fp64 = FPGenerator(0xD74307D3FD3382DB, 64)
+
+class seen_ud(object):
+    # split long URL, use fp for the tail (0.02-0.04s/80URIs)
+    def longkeyhash32(self, s):
+        return ("#%x" % (_fp32.fp(s) >> 32))
+    def hosthash(self, h):
+        # mongodb can only handle upto 64bit signed int
+        #return (_fp63.fp(h) >> 1)
+        return int(_fp31.fp(h) >> 33)
+
+    def urlkey(self, url):
+        k = {}
+        # 790 < 800 - (32bit/4bit + 1)
+        if len(url) > 790:
+            u1, u2 = url[:790], url[790:]
+            k.update(u1=u1, u2=u2, h=self.longkeyhash32(u2))
+        else:
+            k.update(u1=url, h='')
+        return k
+    def keyurl(self, k):
+        return k['u1']+k['u2'] if 'u2' in k else k['u1']
+    def keyfp(self, k):
+        url = k['u1']
+        p1 = url.find('://')
+        if p1 > 0:
+            p2 = url.find('/', p1+3)
+            host = url[p1+3:p2] if p2 >= 0 else url[p1+3:]
+        else:
+            host = ''
+        return self.hosthash(host)
+    def keyhost(self, k):
+        return k['H']
+    # name is incorrect
+    def keyquery(self, k):
+        # in sharded environment, it is important to have shard key in
+        # a query. also it is necessary for non-multi update to work.
+        return {'fp':self.keyfp(k), 'u.u1':k['u1'], 'u.h':k['h']}
+    # old and incorrect name
+    uriquery = keyquery
+
+class Scheduler(seen_ud):
+    NWORKSETS_BITS = 8
+
+    def workset(self, fp):
+        return fp >> (31 - self.NWORKSETS_BITS)
+
+    def schedule(self, curi):
+        ws = self.workset(curi['fp'])
+        curi['ws'] = ws
+        curi['co'] = 0
+        if options.dryrun:
+            print >>sys.stderr, "  SCHEDULE %s" % curi
+            return
+        if '_id' in curi:
+            seen.update({'_id': curi['_id'], 'fp': curi['fp']},
+                        {'$set':{'ws': curi['ws'],
+                                 'co': curi['co'],
+                                 'w': curi['w']}},
+                        upsert=False, multi=False)
+        else:
+            seen.insert(curi)
+
+    def schedule_unseen(self, duri):
+        url = duri['u']
+        uk = self.urlkey(url)
+        q = self.keyquery(uk)
+        curi = seen.find_one(q)
+        if curi is None:
+            curi = dict(u=uk, fp=q['fp'])
+            curi['w'] = dict(p=duri.get('p'), v=duri.get('v'),
+                             x=duri.get('x'))
+            self.schedule(curi)
+            return True
+        else:
+            if 'w' in curi: return False
+            if curi.get('e', sys.maxint) < time.time():
+                curi['w'] = dict(p=duri.get('p'), v=duri.get('v'),
+                                 x=duri.get('x'))
+                self.schedule(curi)
+                return True
+            return False
+
+class Processor(Thread):
+    def __init__(self, queue):
+        Thread.__init__(self, name='Processor')
+        self.queue = queue
+        self.scheduler = Scheduler()
+        
+    def run(self):
+        while 1:
+            bucket = self.queue.get()
+            if not bucket:
+                break
+            oid = bucket['_id']
+            duris = bucket['d']
+            i = len(duris)
+            for duri in duris:
+                print >>sys.stderr, "%d %s" % (i, duri['u'])
+                i -= 1
+                if self.scheduler.schedule_unseen(duri):
+                    pass
+                else:
+                    print >>sys.stderr, "  SEEN"
+        print >>sys.stderr, "Processor exiting"
+            
+queue = Queue(2)
+processor = Processor(queue)
+processor.start()
+try:
+    cur = inq.find({'q':{'$gt':0}}).limit(100)
+    for bucket in cur:
+        if bucket:
+            queue.put(bucket)
+        if not options.dryrun:
+            inq.update({'_id': bucket['_id']}, {'$set':{'q': 0}})
+except KeyboardInterrupt:
+    print >>sys.stderr, "KeyboardInterrupt. stopping..."
+
+queue.put({})
+processor.join()
+
