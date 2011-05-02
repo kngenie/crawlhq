@@ -13,6 +13,8 @@ import time
 opt = OptionParser(usage='%prog [OPTIONS] JOBNAME')
 opt.add_option('-d', action='store', dest='dbspec', default='localhost/crawl',
                help='database specification: host[:port][/db]')
+opt.add_option('-v', action='store_true', dest='verbose', default=False,
+               help='print out extra information')
 opt.add_option('--test', action='store_true', dest='dryrun', default=False,
                help='disallow any updates to the database')
 options, args = opt.parse_args()
@@ -128,22 +130,29 @@ class Processor(Thread):
         Thread.__init__(self, name='Processor')
         self.queue = queue
         self.scheduler = Scheduler()
+        self.buckets = 0
+        self.uris = 0
+        self.scheduled = 0
         
     def run(self):
         while 1:
             bucket = self.queue.get()
             if not bucket:
                 break
+            self.buckets += 1
             oid = bucket['_id']
             duris = bucket['d']
             i = len(duris)
             for duri in duris:
-                print >>sys.stderr, "%d %s" % (i, duri['u'])
+                if options.verbose:
+                    print >>sys.stderr, "%d %s" % (i, duri['u'])
                 i -= 1
+                self.uris += 1
                 if self.scheduler.schedule_unseen(duri):
-                    pass
+                    self.scheduled += 1
                 else:
-                    print >>sys.stderr, "  SEEN"
+                    if options.verbose:
+                        print >>sys.stderr, "  SEEN"
         print >>sys.stderr, "Processor exiting"
             
 queue = Queue(2)
