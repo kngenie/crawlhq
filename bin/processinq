@@ -9,6 +9,7 @@ from Queue import Queue, Empty
 from threading import Thread, Condition, RLock
 from cfpgenerator import FPGenerator
 import time
+import traceback
 
 opt = OptionParser(usage='%prog [OPTIONS] JOBNAME')
 opt.add_option('-d', action='store', dest='dbspec', default='localhost/crawl',
@@ -83,8 +84,41 @@ class seen_ud(object):
     # old and incorrect name
     uriquery = keyquery
 
-class Scheduler(seen_ud):
+class Stat(object):
+    def __init__(self):
+        self.buckets = 0
+        self.processed = 0
+        self.scheduled = 0
+    
+class IterableQueue(Queue):
+    '''Queue wrapped as iterable'''
+    def __init__(self, capacity=0):
+        Queue.__init__(self, capacity)
+        # to prevent premature stop, active counter starts with 1
+        self.__active = 1
+    def start(self):
+        self.__active += 1
+    def stop(self):
+        self.__active -= 1
+        if self.__active == 1:
+            self.__active = 0
+    def __iter__(self):
+        return self
+    def next(self):
+        while self.__active > 0:
+            try:
+                return self.get(timeout=0.5)
+            except Empty:
+                pass
+        raise StopIteration
+
+class Scheduler(seen_ud, Thread):
     NWORKSETS_BITS = 8
+
+    def __init__(self, curi_iter, stat):
+        Thread.__init__(self, name='Scheduler')
+        self.curi_iter = curi_iter
+        self.stat = stat
 
     def workset(self, fp):
         return fp >> (31 - self.NWORKSETS_BITS)
@@ -93,8 +127,10 @@ class Scheduler(seen_ud):
         ws = self.workset(curi['fp'])
         curi['ws'] = ws
         curi['co'] = 0
-        if options.dryrun:
+        if options.verbose:
             print >>sys.stderr, "  SCHEDULE %s" % curi
+        if options.dryrun:
+            self.stat.scheduled += 1
             return
         if '_id' in curi:
             seen.update({'_id': curi['_id'], 'fp': curi['fp']},
@@ -104,6 +140,26 @@ class Scheduler(seen_ud):
                         upsert=False, multi=False)
         else:
             seen.insert(curi)
+        self.stat.scheduled += 1
+
+    def run(self):
+        try:
+            for curi in self.curi_iter:
+                self.schedule(curi)
+        except:
+            traceback.print_exc()
+        print >>sys.stderr, "%s terminating" % str(self)
+
+class SeenChecker(seen_ud, Thread):
+    def __init__(self, duri_iter, stat, outqueue):
+        Thread.__init__(self, name='SeenChecker')
+        self.queue = outqueue
+        self.duri_iter = duri_iter
+        self.stat = stat
+        self.queue.start()
+
+    def schedule(self, curi):
+        self.queue.put(curi)
 
     def schedule_unseen(self, duri):
         url = duri['u']
@@ -125,21 +181,37 @@ class Scheduler(seen_ud):
                 return True
             return False
 
-class Processor(Thread):
-    def __init__(self, queue):
-        Thread.__init__(self, name='Processor')
-        self.queue = queue
-        self.scheduler = Scheduler()
-        self.buckets = 0
-        self.uris = 0
-        self.scheduled = 0
-        
     def run(self):
+        try:
+            for duri in self.duri_iter:
+                self.schedule_unseen(duri)
+                self.stat.processed += 1
+        except:
+            traceback.print_exc()
+        finally:
+            self.queue.stop()
+            print >>sys.stderr, "%s terminating" % str(self)
+                
+        
+class BucketReader(Thread):
+    '''read in IncomingQueue buckets and dispense DURIs as iterator'''
+    def __init__(self, stat, qsize=2):
+        Thread.__init__(self, name='BucketReader')
+        self.stat = stat
+        self.queue = Queue(qsize)
+        self.__stop = False
+
+    def stop(self):
+        self.__stop = True
+
+    def __iter__(self):
         while 1:
-            bucket = self.queue.get()
-            if not bucket:
-                break
-            self.buckets += 1
+            try:
+                bucket = self.queue.get(timeout=0.5)
+            except Empty:
+                if self.__stop: break
+                continue
+            self.stat.buckets += 1
             oid = bucket['_id']
             duris = bucket['d']
             i = len(duris)
@@ -147,28 +219,72 @@ class Processor(Thread):
                 if options.verbose:
                     print >>sys.stderr, "%d %s" % (i, duri['u'])
                 i -= 1
-                self.uris += 1
-                if self.scheduler.schedule_unseen(duri):
-                    self.scheduled += 1
-                else:
-                    if options.verbose:
-                        print >>sys.stderr, "  SEEN"
-        print >>sys.stderr, "Processor exiting"
-            
-queue = Queue(2)
-processor = Processor(queue)
-processor.start()
+                yield duri
+
+    def run(self):
+        try:
+            while not self.__stop:
+                cur = inq.find({'q':{'$gt':0}}).limit(100)
+                for bucket in cur:
+                    if bucket:
+                        self.queue.put(bucket)
+                    if not options.dryrun:
+                        inq.update({'_id': bucket['_id']}, {'$set':{'q': 0}})
+                    if self.__stop: break
+        except:
+            traceback.print_exc()
+        print >>sys.stderr, "%s terminating" % str(self)
+        
+class Reporter():
+    def __init__(self, stat, bucketqueue, schedulequeue):
+        self.stat = stat
+        self.bucketqueue = bucketqueue
+        self.schedulequeue = schedulequeue
+    def run(self):
+        t0 = time.time()
+        buckets0 = 0
+        processed0 = 0
+        scheduled0 = 0
+        while 1:
+            time.sleep(1.0)
+            t = time.time()
+            el = t - t0
+            buckets = self.stat.buckets
+            processed = self.stat.processed
+            scheduled = self.stat.scheduled
+            print >>sys.stderr, "buckets:%d | %d | processed:%d (%.2f/s) | %d | scheduled:%d (%.2f/s)" % (
+                buckets, self.bucketqueue.qsize(),
+                processed, (processed - processed0) / el,
+                self.schedulequeue.qsize(),
+                scheduled, (scheduled - scheduled0) / el
+                )
+            buckets0 = buckets
+            processed0 = processed
+            scheduled0 = scheduled
+            t0 = t
+
+threads = []
+def start(th):
+    th.start()
+    threads.append(th)
+
+stat = Stat()
+bucketreader = BucketReader(stat, qsize=2)
+schedulequeue = IterableQueue(200)
+for i in range(3):
+    seenchecker = SeenChecker(bucketreader, stat, schedulequeue)
+    start(seenchecker)
+for i in range(2):
+    scheduler = Scheduler(schedulequeue, stat)
+    start(scheduler)
+start(bucketreader)
+
+reporter = Reporter(stat, bucketreader.queue, schedulequeue)
 try:
-    while 1:
-        cur = inq.find({'q':{'$gt':0}}).limit(200)
-        for bucket in cur:
-            if bucket:
-                queue.put(bucket)
-            if not options.dryrun:
-                inq.update({'_id': bucket['_id']}, {'$set':{'q': 0}})
+    reporter.run()
 except KeyboardInterrupt:
     print >>sys.stderr, "KeyboardInterrupt. stopping..."
 
-queue.put({})
-processor.join()
-
+bucketreader.stop()
+for th in threads:
+    th.join()
