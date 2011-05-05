@@ -149,12 +149,15 @@ class ThreadPoolExecutor(object):
             th.join(5.0)
 
     def _work(self):
+        thname = threading.current_thread().name
+        # print >>sys.stderr,"%s starting _work" % thname
         while 1:
             f, args = None, None
             try:
                 f, args = self.work_queue.get()
-                #print >>sys.stderr, "work starting %s%s" % (f, args)
+                # print >>sys.stderr, "%s work starting %s%s" % (thname, f, args)
                 f(*args)
+                # print >>sys.stderr, "%s work done %s%s" % (thname, f, args)
             except Exception as ex:
                 print >>sys.stderr, "work error in %s%s" % (f, args)
                 traceback.print_exc()
@@ -715,6 +718,7 @@ class IncomingQueue(ThreadPoolExecutor):
         return result
 
     def _process(self, bucket):
+        # print >>sys.stderr, "IncomingQueue._process:start"
         result = dict(processed=0, scheduled=0, t=0.0)
         t0 = time.time()
         for duri in bucket:
