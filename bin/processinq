@@ -18,6 +18,10 @@ opt.add_option('-v', action='store_true', dest='verbose', default=False,
                help='print out extra information')
 opt.add_option('--test', action='store_true', dest='dryrun', default=False,
                help='disallow any updates to the database')
+opt.add_option('--ts', action='store', dest='threads_seen', default=3,
+               type='int')
+opt.add_option('--tu', action='store', dest='threads_update', default=2,
+               type='int')
 options, args = opt.parse_args()
 
 m = re.match(r'([^:]+(?::\d+))?(?:/(.+))?', options.dbspec)
@@ -271,10 +275,10 @@ def start(th):
 stat = Stat()
 bucketreader = BucketReader(stat, qsize=2)
 schedulequeue = IterableQueue(200)
-for i in range(3):
+for i in range(options.threads_seen):
     seenchecker = SeenChecker(bucketreader, stat, schedulequeue)
     start(seenchecker)
-for i in range(2):
+for i in range(options.threads_update):
     scheduler = Scheduler(schedulequeue, stat)
     start(scheduler)
 start(bucketreader)
