@@ -81,13 +81,21 @@ function seencheck(ev) {
       } else {
         var tbl = document.createElement('table');
         tbl.border = '1';
-        $.each(['e','f','fp'], function() {
-          if (this in u) {
-            var tr = tbl.insertRow(-1);
-            tr.insertCell(-1).innerHTML = this;
-            tr.insertCell(-1).innerHTML = u[this];
-          }
-        });
+        if (u.f) {
+          var tr = tbl.insertRow(-1);
+          tr.insertCell(-1).innerHTML = 'Cralwed on';
+          tr.insertCell(-1).innerHTML = new Date(u.f*1000);
+        }
+        if (u.e) {
+          var tr = tbl.insertRow(-1);
+          tr.insertCell(-1).innerHTML = 'Expires on';
+          tr.insertCell(-1).innerHTML = new Date(u.e*1000);
+        }
+        if ('fp' in u) {
+          var tr = tbl.insertRow(-1);
+          tr.insertCell(-1).innerHTML = 'fp';
+          tr.insertCell(-1).innerHTML = u.fp;
+        }
         $('#seencheckresult_'+job).empty().append(tbl);
       }
     }
