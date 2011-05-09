@@ -138,13 +138,21 @@ class Scheduler(seen_ud, Thread):
             self.stat.scheduled += 1
             return
         if '_id' in curi:
+            t0 = time.time()
             seen.update({'_id': curi['_id'], 'fp': curi['fp']},
                         {'$set':{'ws': curi['ws'],
                                  'co': curi['co'],
                                  'w': curi['w']}},
                         upsert=False, multi=False)
+            t = time.time() - t0
+            if t > 0.1:
+                print >>sys.stderr, "seen.update %d %.3f" % (curi['fp'], t)
         else:
+            t0 = time.time()
             seen.insert(curi)
+            t = time.time() - t0
+            if t > 0.1:
+                print >>sys.stderr, "seen.insert %d %.3f" % (curi['fp'], t)
         self.stat.scheduled += 1
 
     def run(self):
