@@ -10,6 +10,7 @@ from threading import Thread, Condition, RLock
 from cfpgenerator import FPGenerator
 import time
 import traceback
+from fileinq import IncomingQueue
 
 opt = OptionParser(usage='%prog [OPTIONS] JOBNAME')
 opt.add_option('-d', action='store', dest='dbspec', default='localhost/crawl',
@@ -150,6 +151,7 @@ class Scheduler(seen_ud, Thread):
         try:
             for curi in self.curi_iter:
                 self.schedule(curi)
+                db.connection.end_request()
         except:
             traceback.print_exc()
         print >>sys.stderr, "%s terminating" % str(self)
@@ -169,7 +171,11 @@ class SeenChecker(seen_ud, Thread):
         url = duri['u']
         uk = self.urlkey(url)
         q = self.keyquery(uk)
+        t0 = time.time()
         curi = seen.find_one(q)
+        t = time.time() - t0
+        if t > 0.1:
+            print >>sys.stderr, "seen.find_one %d %.3f" % (q['fp'], t)
         if curi is None:
             curi = dict(u=uk, fp=q['fp'])
             curi['w'] = dict(p=duri.get('p'), v=duri.get('v'),
@@ -189,6 +195,7 @@ class SeenChecker(seen_ud, Thread):
         try:
             for duri in self.duri_iter:
                 self.schedule_unseen(duri)
+                db.connection.end_request()
                 self.stat.processed += 1
         except:
             traceback.print_exc()
@@ -197,6 +204,32 @@ class SeenChecker(seen_ud, Thread):
             print >>sys.stderr, "%s terminating" % str(self)
                 
         
+class FileQueueReader(object):
+    '''read DURI from file-based IncomingQueue in a thread-safe way'''
+    def __init__(self, job, stat):
+        self.stat = stat
+        self.__stop = False
+        self.inq = IncomingQueue(job, None)
+        self.inqlock = RLock()
+    def start(self):
+        pass
+    def stop(self):
+        self.__stop = True
+    def qsize(self):
+        '''just for compatibility with BucketReader.queue'''
+        return len(self.inq.rqfiles)
+    def __iter__(self):
+        return self
+    def next(self):
+        while not self.__stop:
+            with self.inqlock:
+                duri = self.inq.get(1.0)
+            if duri:
+                if options.verbose:
+                    print >>sys.stderr, "%d %s" % (i, duri['u'])
+                return duri
+        raise StopIteration
+
 class BucketReader(Thread):
     '''read in IncomingQueue buckets and dispense DURIs as iterator'''
     def __init__(self, stat, qsize=2):
@@ -273,7 +306,8 @@ def start(th):
     threads.append(th)
 
 stat = Stat()
-bucketreader = BucketReader(stat, qsize=2)
+#bucketreader = BucketReader(stat, qsize=2)
+bucketreader = FileQueueReader(job, stat)
 schedulequeue = IterableQueue(200)
 for i in range(options.threads_seen):
     seenchecker = SeenChecker(bucketreader, stat, schedulequeue)
@@ -281,9 +315,9 @@ for i in range(options.threads_seen):
 for i in range(options.threads_update):
     scheduler = Scheduler(schedulequeue, stat)
     start(scheduler)
-start(bucketreader)
+#start(bucketreader)
 
-reporter = Reporter(stat, bucketreader.queue, schedulequeue)
+reporter = Reporter(stat, bucketreader, schedulequeue)
 try:
     reporter.run()
 except KeyboardInterrupt:
