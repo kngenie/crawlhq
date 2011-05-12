@@ -19,6 +19,7 @@ import random
 from Queue import Queue, Empty
 import traceback
 import atexit
+from fileinq import IncomingQueue
 
 urls = (
     '/(.*)/(.*)', 'ClientAPI',
@@ -174,6 +175,8 @@ class WorkSet(seen_ud):
     SCHEDULE_SPILL_SIZE = 30000
     SCHEDULE_MAX_SIZE = 50000
     SCHEDULE_LOW = 160
+    loadgroup = []
+    loadgrouplock = threading.RLock()
     def __init__(self, job, wsid):
         self.job = job
         self.id = wsid
@@ -185,6 +188,9 @@ class WorkSet(seen_ud):
         self.activelock = threading.RLock()
         self.active = {}
         self.running = False
+        # set to True when this WorkSet is being dropped,
+        # because it's been re-assigned to other worker.
+        self.dropping = False
 
     def get_status(self):
         def is_locked(lock):
@@ -250,7 +256,49 @@ class WorkSet(seen_ud):
             if self.loading: return
             if self.scheduled.qsize() < self.SCHEDULE_LOW:
                 self.loading = True
-                executor.execute(self._load)
+                #executor.execute(self._load)
+                with WorkSet.loadgrouplock:
+                    WorkSet.loadgroup.append(self)
+                    # if this is the first WorkSet, schedule group
+                    # loading task.
+                    if len(WorkSet.loadgroup) == 1:
+                        executor.execute(self._load_group)
+
+    def _load_group(self):
+        time.sleep(0.05) # wait 50ms
+        with self.loadgrouplock:
+            group = WorkSet.loadgroup
+            WorkSet.loadgroup = []
+        if len(group) == 0: return
+        if len(group) == 1:
+            group[0]._load()
+            return
+        t0 = time.time()
+        l = []
+        limit = self.SCHEDULE_LOW * len(group)
+        wsa = []; wsmap = {}
+        for ws in group:
+            wsa.append(ws.id)
+            wsmap[ws.id] = ws
+        try:
+            qfind = dict(co=0, ws={'$in': wsa})
+            cur = self.seen.find(qfind, limit=limit)
+            for o in cur:
+                ws = wsmap[o['ws']]
+                ws.scheduled.put(o)
+                ws.add_active(o)
+                l.append(o)
+            for o in l:
+                qup = dict(_id=o['_id'], fp=o['fp'])
+                self.seen.update(qup, {'$set':dict(co=1)},
+                                 upsert=False, multi=False)
+                o['co'] = 1
+        finally:
+            for ws in group:
+                with ws.loadlock:
+                    ws.loading = False
+        print >>sys.stderr, "WorkSet(%s,%s)._load_group: %d in %.2fs" % \
+            (self.job, wsa, len(l), (time.time()-t0))
 
     def _load(self):
         t0 = time.time()
@@ -597,154 +645,6 @@ class Scheduler(seen_ud):
         #    cl.flush_scheduled()
         for ws in self.worksets:
             ws.unload()
-        
-class IncomingQueue(ThreadPoolExecutor):
-    def __init__(self, job, scheduler):
-        '''scheduler: Scheduler for job'''
-        ThreadPoolExecutor.__init__(self, poolsize=5, queuesize=50)
-        self.job = job
-        self.scheduler = scheduler
-        self.coll = db.inq[self.job]
-        self.addedcount = 0
-        self.processedcount = 0
-
-        self.rmcount = 0
-
-    def get_status(self):
-        return dict(addedcount=self.addedcount,
-                    processedcount=self.processedcount,
-                    workqueuesize=self.work_queue.qsize())
-
-    def add(self, curis):
-        result = dict(processed=0)
-        now = time.time()
-        if True:
-            # just queue up
-            self.coll.update({'q':0},
-                             {'$set':{'d':curis, 'q':now}},
-                             multi=False, upsert=True)
-            result['processed'] = len(curis)
-            self.addedcount += result['processed']
-        else:
-            # schedule immediately
-            for curi in curis:
-                result['processed'] += 1
-                if self.scheduler.schedule_unseen(curi):
-                    result['scheduled'] += 1
-        return result
-                                     
-    def getinq_fam(self, result, maxn):
-        '''getinq with findAndModify. thread safe, but can be very slow.'''
-        while result['processed'] < maxn:
-            r = db.command('findAndModify', self.coll.name,
-                           remove=True,
-                           allowable_errors=['No matching object found'])
-            if r['ok'] == 0:
-                break
-
-            result['inq'] += 1
-            e = r['value']
-            if 'd' in e:
-                # discovered
-                for curi in e['d']:
-                    yield curi
-            else:
-                yield e
-
-    def _remove_done(self):
-        self.coll.remove({'done':1})
-
-    def getinq_f1(self, result, maxn):
-        '''getinq with find_one and update. not thread safe, but faster
-        with large collection.'''
-        result.update(inq=0, processed=0, td=0.0)
-        while result['processed'] < maxn:
-            start = time.time()
-            e = self.coll.find_one({'q':{'$gt':0}})
-            if e is None:
-                break
-            #self.coll.remove({'_id':e['_id']})
-            self.coll.update({'_id':e['_id']}, {'$set':{'q':0}},
-                             upsert=False, multi=False)
-            self.rmcount += 1
-            if self.rmcount > 100:
-                #self.execute(self._remove_done)
-                self.rmcount = 0
-            result['td'] += (time.time() - start)
-            result['inq'] += 1
-            if 'd' in e:
-                for curi in e['d']:
-                    yield curi
-            else:
-                yield e
-
-    def getinq_it(self, result, maxn):
-        '''getinq with fine_one and remove. not thread safe, but faster
-        with large collection.'''
-        it = self.coll.find()
-        while result['processed'] < maxn:
-            start = time.time()
-            try:
-                e = it.next()
-            except StopIteration:
-                break
-            self.coll.remove({'_id':e['_id']})
-            result['td'] += (time.time() - start)
-            result['inq'] += 1
-            if 'd' in e:
-                for curi in e['d']:
-                    #print >>sys.stderr, str(curi)
-                    yield curi
-            else:
-                yield e
-        
-    getinq = getinq_f1
-
-    def process_0(self, maxn):
-        '''process curis queued'''
-        result = dict(inq=0, processed=0, scheduled=0, td=0.0, ts=0.0,
-                      tu=0.0)
-
-        for curi in self.getinq(result, maxn):
-            result['processed'] += 1
-            t0 = time.time()
-            if self.scheduler.schedule_unseen(curi):
-                result['scheduled'] += 1
-                result['ts'] += (time.time() - t0)
-            else:
-                result['tu'] += (time.time() - t0)
-            self.processedcount += 1
-
-        return result
-
-    def _process(self, bucket):
-        # print >>sys.stderr, "IncomingQueue._process:start"
-        result = dict(processed=0, scheduled=0, t=0.0)
-        t0 = time.time()
-        for duri in bucket:
-            result['processed'] += 1
-            #print >>sys.stderr, "duri=%s" % duri
-            if self.scheduler._schedule_unseen(duri):
-                result['scheduled'] += 1
-            self.processedcount += 1
-        result['t'] = time.time() - t0
-        print >>sys.stderr, "IncomingQueue._process:%s" % result
-
-    def process(self, maxn):
-        '''schedule_unseen CURIs queued'''
-        result = dict(processed=0, buckets=0)
-        bucket = []
-        for duri in self.getinq(result, maxn):
-            result['processed'] += 1
-            bucket.append(duri)
-            if len(bucket) >= 50:
-                result['buckets'] += 1
-                self.execute(self._process, bucket)
-                bucket = []
-        if len(bucket) > 0:
-            result['buckets'] += 1
-            self.execute(self._process, bucket)
-        return result
 
 class Headquarters(seen_ud):
     def __init__(self):
