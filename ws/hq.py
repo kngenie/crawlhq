@@ -174,7 +174,7 @@ class ThreadPoolExecutor(object):
 class WorkSet(seen_ud):
     SCHEDULE_SPILL_SIZE = 30000
     SCHEDULE_MAX_SIZE = 50000
-    SCHEDULE_LOW = 160
+    SCHEDULE_LOW = 500
     loadgroup = []
     loadgrouplock = threading.RLock()
     def __init__(self, job, wsid):
@@ -256,13 +256,15 @@ class WorkSet(seen_ud):
             if self.loading: return
             if self.scheduled.qsize() < self.SCHEDULE_LOW:
                 self.loading = True
-                #executor.execute(self._load)
-                with WorkSet.loadgrouplock:
-                    WorkSet.loadgroup.append(self)
-                    # if this is the first WorkSet, schedule group
-                    # loading task.
-                    if len(WorkSet.loadgroup) == 1:
-                        executor.execute(self._load_group)
+                if True:
+                    executor.execute(self._load)
+                else:
+                    with WorkSet.loadgrouplock:
+                        WorkSet.loadgroup.append(self)
+                        # if this is the first WorkSet, schedule group
+                        # loading task.
+                        if len(WorkSet.loadgroup) == 1:
+                            executor.execute(self._load_group)
 
     def _load_group(self):
         time.sleep(0.05) # wait 50ms
@@ -305,7 +307,7 @@ class WorkSet(seen_ud):
         l = []
         try:
             qfind = dict(co=0, ws=self.id)
-            cur = self.seen.find(qfind, limit=self.SCHEDULE_LOW)
+            cur = self.seen.find(qfind, limit=self.SCHEDULE_LOW*2)
             for o in cur:
                 self.scheduled.put(o)
                 self.add_active(o)
@@ -752,7 +754,7 @@ class Headquarters(seen_ud):
             r['worksets'] = sch.get_workset_status()
         return r
 
-executor = ThreadPoolExecutor(poolsize=10)
+executor = ThreadPoolExecutor(poolsize=8)
 hq = Headquarters()
 atexit.register(executor.shutdown)
 atexit.register(hq.shutdown)
