@@ -69,10 +69,10 @@ class Query:
     def __init__(self):
         pass
     def GET(self, c):
-        if not re.match(r'[^a-z]+$', c):
-            raise web.notfound('c')
+        if not re.match(r'[a-z]+$', c):
+            raise web.notfound('bad action ' + c)
         if not hasattr(self, 'do_' + c):
-            raise web.notfound('c')
+            raise web.notfound('bad action ' + c)
         return getattr(self, 'do_' + c)()
 
     def do_searchseen(self):
@@ -85,6 +85,16 @@ class Query:
             del d['_id']
             r.append(d)
 
+        return json.dumps(r)
+
+    def do_jobstat(self):
+        p = web.input(job=None)
+        r = {}
+        if p.job:
+            if p.job == 'wide':
+                r['seencount'] = db.seen.count()
+            else:
+                r['seencount'] = db.seen[p.job].count()
         return json.dumps(r)
 
 if __name__ == '__main__':

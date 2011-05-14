@@ -10,6 +10,7 @@ locale.setlocale(locale.LC_ALL, 'en_US')
 <style type="text/css">
 table { border-collapse:collapse; }
 td.n { text-align: right; }
+.loading { color: #666; }
 </style>
 </head>
 <body>
@@ -20,8 +21,9 @@ td.n { text-align: right; }
 <div class="job" jobname="${j.name}">
   <div class="jtitle">${i+1}: ${j.name}</div>
   <div class="jobdetail">
-    <span>Seen: ${format(j.seen, 'n')}</span>
+    <span>Seen: <span id="seencount">${format(j.seen, 'n')}</span></span>
     <span>Inq: ${format(j.queue.inqcount, 'n')}</span>
+    <button id="update-jobstat">Update</button>
   </div>
   <div>
     <button>Reset</button>
@@ -119,12 +121,19 @@ function renderstatus(data, status, xhr) {
     var clients = sch.clients;
     if (clients) {
       d.append($(document.createElement('div')).html('clients:'));
+      var tbl = $(document.createElement('table')).attr('border','1')
+        .addClass('Clients');
+      var r = tbl.get(0).insertRow(-1);
+      $.each(['id','active','fed','scheduled','next','worksets'],
+             function(i, s){ $(r.insertCell(-1)).text(s); });
       $.each(clients, function(k, v){
-          d.append($(document.createElement('div')).addClass('client')
-            .append(k+': active='+v.activecount+', feed='+v.feedcount+
-                    ', scheduled='+v.scheduledcount+', next='+v.next+
-                    ', worksets='+v.worksetcount));
+          r = tbl.get(0).insertRow(-1);
+          $(r).addClass('client');
+          $(r.insertCell(-1)).text(k).attr({align:'right'});
+          $.each(['activecount','feedcount','scheduledcount','next','worksetcount'],
+                 function(i, p){ $(r.insertCell(-1)).text(v[p]).attr({align:'right'}); });
         });
+      d.append(tbl);
     }
   }
 }
@@ -140,8 +149,28 @@ function showstatus(ev) {
     success: renderstatus
   });
 }
+function with_comma(n) {
+  var digits = String(n).match(/./g);
+  for (var i = digits.length - 3; i > 1; i -= 3) {
+    digits.splice(i, 0, ',');
+  }
+  return digits.join('');  
+}
+function render_jobstat(data) {
+  $('#seencount').text(with_comma(data.seencount)).removeClass('loading');
+}
+function update_jobstat() {
+  var job = getjobname(this);
+  $('#seencount').addClass('loading');
+  $.ajax('status/q/jobstat', {
+    data:{job:job},
+    dataType:'json',
+    success: render_jobstat
+  });
+}
 $('.seencheck').submit(seencheck);
 $('.showstatus').click(showstatus);
+$('#update-jobstat').click(update_jobstat);
 })(jQuery);
 </script>
 </html>
