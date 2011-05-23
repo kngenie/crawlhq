@@ -103,11 +103,13 @@ class Worksets(object):
 
     def suri_workset(self, suri):
         if 'ws' not in suri:
-            raise Exception, 'ws is missing in curi'
+            #raise Exception, 'ws is missing in curi'
+            return None
         return suri['ws']
 
     def enqueue(self, suri):
         ws = self.suri_workset(suri)
+        if ws is None: return
         wsq = self.get_wsq(ws)
 
         url = seen_ud.keyurl(suri['u'])
