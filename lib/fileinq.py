@@ -25,6 +25,7 @@ class FileEnqueue(object):
     def close(self):
         self.closed.set()
         self.file.close()
+        self.file = None
         print >>sys.stderr, "renaming %s to %s" % (self.openfilename, self.filename)
         os.rename(os.path.join(self.qdir, self.openfilename),
                   os.path.join(self.qdir, self.filename))
