@@ -4,8 +4,11 @@
 import sys, os
 sys.path[0:0] = (os.path.join(sys.path[0], '../lib'),)
 from fileinq import FileEnqueue
+from cfpgenerator import FPGenerator
 from threading import RLock
 import pymongo
+
+_fp64 = FPGenerator(0xD74307D3FD3382DB, 64)
 
 class seen_ud(object):
     # split long URL, use fp for the tail (0.02-0.04s/80URIs)
@@ -68,8 +71,8 @@ class WorksetQueue(FileEnqueue):
         with self.qfilelock:
             if not self.file:
                 self.open()
-            FileQueue.queue(self, curi)
-            if self.size > self.MAXSIZE:
+            FileEnqueue.queue(self, curi)
+            if self.size() > self.MAXSIZE:
                 self.close()
 
 class Worksets(object):
@@ -107,7 +110,11 @@ class Worksets(object):
         ws = self.suri_workset(suri)
         wsq = self.get_wsq(ws)
 
-        curi = dict(u=seen_ud.keyurl(suri['u']), id=suri['_id'])
+        url = seen_ud.keyurl(suri['u'])
+        uhash = _fp64.fp(url)
+        S64 = 1<<63
+        if uhash & S64: uhash = int(uhash & (S64 - 1)) - S64
+        curi = dict(u=url, id=uhash)
         w = suri.get('w')
         if w:
             curi['p'] = w.get('p')
@@ -130,9 +137,11 @@ fpb = 0
 FPMAX = ((1<<32)-1)
 i = 0
 while fpb <= FPMAX:
-    cur = seen.find({'fp':fpb, 'co':{'$gt':0}})
+    sys.stderr.write('finding fp=%d...' % fpb)
+    cur = seen.find({'fp':fpb, 'co':{'$gte':0}})
+    sys.stderr.write('%d CURIs\n' % cur.count())
     for u in cur:
         i += 1
         print >>sys.stderr, "%d %d %s" % (fpb, i, u)
-        worksets.queue(u)
+        worksets.enqueue(u)
     fpb += 1
