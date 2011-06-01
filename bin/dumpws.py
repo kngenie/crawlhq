@@ -135,15 +135,19 @@ seen = db.seen
 
 worksets = Worksets('wide', '/1/crawling/hq/ws')
 
-fpb = 0
+FPINTERVAL = 4096
+#fpb = 0
+fpb = 188986381 + 1
+fpb = 193814159 + 1
 FPMAX = ((1<<32)-1)
 i = 0
 while fpb <= FPMAX:
-    sys.stderr.write('finding fp=%d...' % fpb)
-    cur = seen.find({'fp':fpb, 'co':{'$gte':0}})
+    fpe = min(FPMAX, fpb+FPINTERVAL)
+    sys.stderr.write('finding fp=%d..%d...' % (fpb, fpe))
+    cur = seen.find({'fp':{'$gte':fpb, '$lt':int(fpe)}, 'co':{'$gte':0}})
     sys.stderr.write('%d CURIs\n' % cur.count())
     for u in cur:
         i += 1
-        print >>sys.stderr, "%d %d %s" % (fpb, i, u)
+        #print >>sys.stderr, "%d %d %s" % (fpb, i, u)
         worksets.enqueue(u)
-    fpb += 1
+    fpb += FPINTERVAL
