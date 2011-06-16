@@ -13,6 +13,8 @@ typedef struct {
   static PyObject *extend_byte(PyObject *self, PyObject *args);
   static PyObject *reduce(PyObject *self, PyObject *args);
 
+  static PyObject *sfp(PyObject *self, PyObject *args);
+
 #if 0
   static PyMemberDef members[];
 #endif
@@ -44,6 +46,16 @@ cFPGenerator::fp(PyObject *self, PyObject *args) {
   return PyLong_FromUnsignedLongLong(f);
 }
 
+PyObject *
+cFPGenerator::sfp(PyObject *self, PyObject *args) {
+  const char *s;
+  Py_ssize_t n;
+  if (!PyArg_ParseTuple(args, "s#", &s, &n))
+    return NULL;
+  poly f = ((cFPGenerator*)self)->cobj.fp(s, 0, n);
+  return PyInt_FromLong((long)f);
+}
+  
 PyObject *
 cFPGenerator::extend(PyObject *self, PyObject *args) {
   poly f;
@@ -96,6 +108,8 @@ static PyMemberDef cFPGenerator_members[] = {
 static PyMethodDef cFPGenerator_methods[] = {
   {"fp", (PyCFunction)cFPGenerator::fp, METH_VARARGS,
    "computes fingerprint value for string/unicode/buffer"},
+  {"sfp", (PyCFunction)cFPGenerator::sfp, METH_VARARGS,
+   "computes fingerprint value for string/unicode/buffer, and returns as int"},
   {"extend", (PyCFunction)cFPGenerator::extend, METH_VARARGS,
    "extends fingerprint f by adding (all bits of) v"},
   {"extend_byte", (PyCFunction)cFPGenerator::extend_byte, METH_VARARGS,
