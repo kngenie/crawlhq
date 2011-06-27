@@ -52,10 +52,7 @@ class Status:
             qc = db.jobs[j.name].find({'co':{'$gte':0}}).count()
             coqc = 0 # db.jobs[j.name].find({'co':{'$gt':0}}).count()
             inqc = db.inq[j.name].count()
-            if j.name == 'wide':
-                j.seen = db.seen.count()
-            else:
-                j.seen = db.seen[j.name].count()
+            j.seen = db.seen[j.name].count()
             j.queue = Storage(count=qc, cocount=coqc, inqcount=inqc)
 
         db.connection.end_request()
@@ -91,10 +88,7 @@ class Query:
         p = web.input(job=None)
         r = {}
         if p.job:
-            if p.job == 'wide':
-                r['seencount'] = db.seen.count()
-            else:
-                r['seencount'] = db.seen[p.job].count()
+            r['seencount'] = db.seen[p.job].count()
         return json.dumps(r)
 
 if __name__ == '__main__':
