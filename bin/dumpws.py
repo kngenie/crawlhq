@@ -7,6 +7,7 @@ from fileinq import FileEnqueue
 from cfpgenerator import FPGenerator
 from threading import RLock
 import pymongo
+import atexit
 
 _fp64 = FPGenerator(0xD74307D3FD3382DB, 64)
 
@@ -92,6 +93,10 @@ class Worksets(object):
 
         self.workset_queues = [None] * NWORKSETS
 
+    def close(self):
+        for ws in self.workset_queues:
+            if ws: ws.close()
+
     def wsqdir(self, ws):
         return os.path.join(self.qdir, str(ws))
 
@@ -134,20 +139,37 @@ db = conn.crawl
 seen = db.seen
 
 worksets = Worksets('wide', '/1/crawling/hq/ws')
+atexit.register(worksets.close)
 
 FPINTERVAL = 4096
 #fpb = 0
 fpb = 188986381 + 1
 fpb = 193814159 + 1
+fpb = 195128976 + 1
+# start with this number after crawl40x comes back 6/1
+fpb = 640265873
+fpb = 1256500881
 FPMAX = ((1<<32)-1)
 i = 0
 while fpb <= FPMAX:
     fpe = min(FPMAX, fpb+FPINTERVAL)
     sys.stderr.write('finding fp=%d..%d...' % (fpb, fpe))
-    cur = seen.find({'fp':{'$gte':fpb, '$lt':int(fpe)}, 'co':{'$gte':0}})
-    sys.stderr.write('%d CURIs\n' % cur.count())
-    for u in cur:
-        i += 1
-        #print >>sys.stderr, "%d %d %s" % (fpb, i, u)
-        worksets.enqueue(u)
-    fpb += FPINTERVAL
+    done = set()
+    while 1:
+        cur = seen.find({'fp':{'$gte':fpb, '$lt':int(fpe)}, 'co':{'$gte':0}})
+        sys.stderr.write('%d CURIs\n' % cur.count())
+        try:
+            for u in cur:
+                url = seen_ud.keyurl(u['u'])
+                if url in done: continue
+                i += 1
+                #print >>sys.stderr, "%d %d %s" % (fpb, i, u)
+                worksets.enqueue(u)
+                done.add(url)
+            fpb += FPINTERVAL
+            break
+        except pymongo.errors.OperationFailure as ex:
+            # probably "ShardConnection had to change"
+            print >>sys.stderr, str(ex)
+            
+        
