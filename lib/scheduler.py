@@ -253,7 +253,7 @@ class Scheduler(object):
         clid = client[0]
         q = self.clients.get(clid)
         if q is None:
-            worksets = [self.worksets[i] for i in self.wsidforclient(client)]
+            worksets = [self.worksets[i] for i in self.mapper.wsidforclient(client)]
             q = ClientQueue(self.job, worksets)
             self.clients[clid] = q
             print >>sys.stderr, "new ClientQueue created for clid=%s" % clid

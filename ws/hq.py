@@ -240,10 +240,11 @@ class CrawlJob(object):
         #return self.inq.process(maxn)
         result = dict(processed=0, scheduled=0, td=0.0, ts=0.0)
         for count in xrange(maxn):
-            result['processed'] += 1
             t0 = time.time()
             furi = self.inq.get(0.01)
             result['td'] += (time.time() - t0)
+            if furi is None: break
+            result['processed'] += 1
             t0 = time.time()
             if self.scheduler.schedule_unseen(furi):
                 result['scheduled'] += 1
