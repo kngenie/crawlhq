@@ -120,8 +120,6 @@ class FileDequeue(object):
     def __init__(self, qdir, noupdate=False):
         self.qdir = qdir
         # timestamp of the last qfile
-        # any file in qdir older than this will be ignored
-        self.lastqfile = None
         self.rqfile = None
         self.rqfiles = []
         self.noupdate = noupdate
@@ -140,26 +138,19 @@ class FileDequeue(object):
         '''scan qdir for new file'''
         print >>sys.stderr, "scanning %s for new qfile" % self.qdir
         ls = os.listdir(self.qdir)
-        mts = self.lastqfile
+        curset = set(self.rqfiles)
         new_rqfiles = []
         for f in ls:
             if not ('1' <= f[0] <= '9'): continue
             if f.endswith('.open'): continue
-            try:
-                ts = int(f)
-                if self.lastqfile is None or self.lastqfile < ts:
-                    print >>sys.stderr, "new qfile found: %s" % f
-                    new_rqfiles.append(f)
-                    if ts > mts: mts = ts
-                else:
-                    print >>sys.stdrr, "skipping %s < %s" % (f, ts)
-            except:
-                pass
+            if f not in curset:
+                new_rqfiles.append(f)
         if new_rqfiles:
+            print >>sys.stderr, "found %d new queue file(s)" % len(new_rqfiles)
             new_rqfiles.sort()
-            #self.rqfiles.extend(new_rqfiles)
             self.qfiles_available(new_rqfiles)
-        self.lastqfile = mts
+        else:
+            print >>sys.stderr, "no new queue file was found"
 
     def next_rqfile(self, timeout=0.0):
         '''blocks until next qfile becomes available'''
