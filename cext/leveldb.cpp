@@ -42,6 +42,9 @@ typedef struct PyLevelDBIntHash : public PyObject {
   static PyObject *get(PyObject *self, PyObject *args);
 } PyLevelDBIntHash;
 
+// general exception object representing non-ok status from LevelDB APIs.
+static PyObject *leveldbError;
+
 LongComparator comparator;
 
 int
@@ -72,6 +75,7 @@ PyLevelDBIntHash::init(PyObject *self, PyObject *args, PyObject *kwds) {
   status = leveldb::DB::Open(options, dbdir, &THIS->db);
   Py_END_ALLOW_THREADS
   if (!status.ok()) {
+    PyErr_SetString(leveldbError, status.ToString().c_str());
     return -1;
   }
   return 0;
@@ -101,8 +105,12 @@ PyLevelDBIntHash::put(PyObject *self, PyObject *args) {
   Py_BEGIN_ALLOW_THREADS
   sw = THIS->db->Put(leveldb::WriteOptions(), keyslice, valueslice);
   Py_END_ALLOW_THREADS
-  // TODO: throw exception upon error
-  PyObject *rv = sw.ok() ? Py_True : Py_False;
+  if (!sw.ok()) {
+    PyErr_SetString(leveldbError, sw.ToString().c_str());
+    return NULL;
+  }
+  // TODO: should return more useful values?
+  PyObject *rv = Py_True;
   Py_INCREF(rv);
   return rv;
 }
@@ -119,12 +127,14 @@ PyLevelDBIntHash::get(PyObject *self, PyObject *args) {
   Py_BEGIN_ALLOW_THREADS
   sr = THIS->db->Get(leveldb::ReadOptions(), keyslice, &value);
   Py_END_ALLOW_THREADS
-  // TODO: throw exception upon error
   if (sr.IsNotFound()) {
     Py_RETURN_NONE;
-  } else {
-    return PyString_FromStringAndSize(value.data(), value.length());
   }
+  if (!sr.ok()) {
+    PyErr_SetString(leveldbError, sr.ToString().c_str());
+    return NULL;
+  }
+  return PyString_FromStringAndSize(value.data(), value.length());
 }
 
 static PyMethodDef PyLevelDBIntHash_methods[] = {
@@ -194,6 +204,10 @@ initleveldb(void) {
 
   Py_INCREF(&PyLevelDBIntHashType);
   PyModule_AddObject(m, "IntHash", (PyObject*)&PyLevelDBIntHashType);
+
+  leveldbError = PyErr_NewException("leveldb.error", NULL, NULL);
+  Py_INCREF(leveldbError);
+  PyModule_AddObject(m, "error", leveldbError);
 }
 
     
