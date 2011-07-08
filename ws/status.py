@@ -84,6 +84,24 @@ class Query:
 
         return json.dumps(r)
 
+    _fp64 = FPGenerator(0xD74307D3FD3382DB, 64)
+
+    def do_seen(self):
+        p = web.input(u=None, j=None)
+        r = dict(u=p.u, j=p.j)
+        url, job = p.u, p.j
+        if url is None or job is None:
+            return json.dumps(r)
+        h = self._fp64.sfp(url)
+        d = db.seen.find_one({'_id': h})
+        if d is None:
+            r.update(d=None, msg='not found')
+        elif d['u'] != url:
+            r.update(d=None, msg='fp conflict', alt=d['u'])
+        else:
+            r.update(d=d)
+        return json.dumps(r)
+
     def do_jobstat(self):
         p = web.input(job=None)
         r = {}

@@ -71,11 +71,13 @@ function seencheck(ev) {
   if (!url.match('http://'))
     url = 'http://' + url;
   //console.log(url);
-  $.ajax('jobs/'+job+'/seen?u='+encodeURIComponent(url), {
+  $('#seencheckresult_'+job).empty();
+  $.ajax('status/q/seen', {
+    data:{u:url, j:job},
     dataType:'json',
     success:function(data, status, xhr) {
       //console.log(data);
-      var u = data.u;
+      var u = data.d;
       if (u == null) {
         var b = document.createElement('button');
         $(b).html('Schedule').click(schedule);
