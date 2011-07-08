@@ -178,6 +178,9 @@ class Seen(object):
                                       max_open_files=512,
                                       write_buffer_size=128*(1024**2))
 
+    def close(self):
+        self.seendb = None
+
     @staticmethod
     def urikey(uri):
         uhash = Seen._fp64.sfp(uri)
@@ -213,6 +216,7 @@ class CrawlJob(object):
         self.inq = IncomingQueue(self.jobname, self.scheduler)
 
     def shutdown(self):
+        self.seen.close()
         self.scheduler.shutdown()
         self.inq.close()
 
