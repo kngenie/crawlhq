@@ -81,6 +81,7 @@ PyLevelDB::close(PyObject *self, PyObject *args) {
     return NULL;
   }
   delete THIS->db;
+  THIS->db = NULL;
   Py_RETURN_NONE;
 }
 
