@@ -113,11 +113,14 @@ class ClientQueue(object):
     #    return url in self.checkedout
             
     def reset(self):
+        # TODO: client decommission recovery NOT IMPLEMENTED YET
+        # store URLs shipped in log, and send back those unfinished
+        # back into workset.
         # TODO: return something more useful for diagnosing failures
         result = dict(ws=[], ok=True)
-        for ws in self.worksets:
-            ws.reset()
-            result['ws'].append(ws.id)
+        # for ws in self.worksets:
+        #     ws.reset()
+        #     result['ws'].append(ws.id)
         return result
 
     def flush_scheduled(self):
@@ -198,7 +201,11 @@ class Scheduler(object):
 
         self.worksets = [WorkSet(job, wsid) for wsid in xrange(self.NWORKSETS)]
         #self.load_workset_assignment()
+
+        self.use_crawlinfo = False
         
+    PARAMS =[('use_crawlinfo', bool)]
+
     def shutdown(self):
         for clq in self.clients.values():
             clq.shutdown()
@@ -349,11 +356,17 @@ class Scheduler(object):
 
     def feed(self, client, n):
         curis = self.get_clientqueue(client).feed(n)
-        if self.crawlinfo:
-            for curi in curis:
-                crawlinfo = self.crawlinfo.get_crawlinfo(curi)
-                if crawlinfo:
-                    curi['a'] = crawlinfo
+        if self.use_crawlinfo and len(curis) > 0 and self.crawlinfo:
+            # for curi in curis:
+            #     crawlinfo = self.crawlinfo.get_crawlinfo(curi)
+            #     if crawlinfo:
+            #         curi['a'] = crawlinfo
+            t0 = time.time()
+            self.crawlinfo.update_crawlinfo(curis)
+            t = time.time() - t0
+            if t / len(curis) > 0.5:
+                print >>sys.stderr, "slow update_crawlinfo: %s %.3fs/%d" % (
+                    client, t, len(curis))
         return curis
 
     # Scheduler - reset request

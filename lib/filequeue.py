@@ -8,8 +8,10 @@ import mmap
 EMPTY_PAUSE = 15.0
 
 class FileEnqueue(object):
-    def __init__(self, qdir, maxage=30.0, suffix=None):
+    def __init__(self, qdir, maxage=30.0, suffix=None, opener=None,
+                 buffer=0):
         self.qdir = qdir
+        self.opener = opener
 
         self.maxage = float(maxage)
         self.maxsize = 1000*1000*1000 # 1GB
@@ -19,6 +21,10 @@ class FileEnqueue(object):
         self.opened = Event()
         self.lock = RLock()
 
+        self.buffer_size = buffer
+        if self.buffer_size > 0:
+            self.buffer = []
+
         if self.maxage > 0:
             # XXX one monitor thread per FileEnqueue is too much
             # share monitor threads among multiple FileQueues
@@ -27,42 +33,84 @@ class FileEnqueue(object):
             self.rollover_thread.start()
 
         self.file = None
+        self.filename = None
+
+    def _open(self, fn):
+        if self.opener: self.opener.opening(self)
+        self.file = open(os.path.join(self.qdir, fn), 'w+')
+        #if self.opener: self.opener.opened(self)
+
+    def _close(self):
+        if self.buffer_size > 0 and self.buffer:
+            self._flush()
+        self.file.close()
+        self.file = None
+        if self.opener: self.opener.closed(self)
 
     def open(self):
         '''open a new queue file and set it as current'''
-        self.starttime = time.time()
-        self.filename = str(int(self.starttime))
-        if self.suffix: self.filename += ('_%s' % self.suffix)
-        self.openfilename = self.filename + '.open'
-        self.file = open(os.path.join(self.qdir, self.openfilename), 'w+')
-        self.closed.clear()
-        self.opened.set()
+        if self.file: return
+        if not self.filename:
+            self.starttime = time.time()
+            self.filename = str(int(self.starttime))
+            if self.suffix: self.filename += ('_%s' % self.suffix)
+            self.openfilename = self.filename + '.open'
+            self._open(self.openfilename)
+            self.closed.clear()
+            self.opened.set()
+        else:
+            # simply re-open the .open file
+            self._open(self.openfilename)
 
-    def close(self):
-        if self.file is None: return
-        with self.lock:
-            self.file.close()
-            self.file = None
-            self.closed.set()
-            print >>sys.stderr, "renaming %s/%s to %s" % (self.qdir, self.openfilename, self.filename)
-            os.rename(os.path.join(self.qdir, self.openfilename),
-                      os.path.join(self.qdir, self.filename))
-            self.filename = None
-            self.openfilename = None
-            # leave self.starttime - it is used by monitor()
+    def close(self, rollover=True, blocking=True):
+        '''set rollover to False to keep queue file .open'''
+        if self.file is None and self.filename is None:
+            return False
+        if self.lock.acquire(blocking):
+            try:
+                if self.file: self._close()
+                if rollover:
+                    self.closed.set()
+                    print >>sys.stderr, "renaming %s/%s to %s" % (self.qdir, self.openfilename, self.filename)
+                    os.rename(os.path.join(self.qdir, self.openfilename),
+                              os.path.join(self.qdir, self.filename))
+                    self.filename = None
+                    self.openfilename = None
+                    # leave self.starttime - it is used by monitor()
+                return True
+            finally:
+                self.lock.release()
+
+    def _flush(self):
+        '''assuming lock is in place'''
+        if self.file is None:
+            self.open()
+        for s in self.buffer:
+            self.file.write(' ')
+            self.file.write(s)
+            self.file.write('\n')
+        del self.buffer[:]
+        if self.size() > self.maxsize:
+            self.close()
 
     def queue(self, curis):
         if not isinstance(curis, list):
             curis = [curis]
         with self.lock:
-            if self.file is None:
-                self.open()
-            for curi in curis:
-                self.file.write(' ')
-                self.file.write(cjson.encode(curi))
-                self.file.write('\n')
-            if self.size() > self.maxsize:
-                self.close()
+            if self.buffer_size > 0:
+                for curi in curis:
+                    self.buffer.append(cjson.encode(curi))
+                    if len(self.buffer) > self.buffer_size:
+                        self._flush()
+            else:
+                if self.file is None:
+                    self.open()
+                for curi in curis:
+                    self.file.write(' ')
+                    self.file.write(cjson.encode(curi))
+                    self.file.write('\n')
+                if self.size() > self.maxsize:
+                    self.close()
 
     def age(self):
         return time.time() - self.starttime
