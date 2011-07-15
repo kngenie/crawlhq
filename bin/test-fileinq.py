@@ -14,10 +14,13 @@ conn = pymongo.Connection()
 db = conn.crawl
 collinq = db.inq.wide
 
-class BucketReader(object):
+class MongoBucketReader(object):
     def __init__(self):
+        self.conn = pymongo.Connection()
+        self.db = self.conn.crawl
+        self.collinq = self.db.inq.wide
         self.readlock = RLock()
-        self.cur = collinq.find(dict(q={'$gt':0}))
+        self.cur = self.collinq.find(dict(q={'$gt':0}))
         self.count = 0
     def __iter__(self):
         return self
@@ -26,6 +29,26 @@ class BucketReader(object):
             bucket = next(self.cur)
             self.count += 1
             return bucket
+
+class SequenceBucketReader(object):
+    def __init__(self, total, step):
+        self.total = total
+        self.step = step
+        self.readlock = RLock()
+        self.count = 0
+        self.seq = 0
+    def __iter__(self):
+        return self
+    def next(self):
+        if self.count >= self.total:
+            raise StopIteration
+        with self.readlock:
+            d = []
+            for i in xrange(self.step):
+                d.append(dict(u='http://example.com/%d' % self.seq))
+                self.seq += 1
+            self.count += 1
+            return dict(d=d)
 
 class Emitter(Thread):
     def __init__(self, buckets, inq):
@@ -38,8 +61,9 @@ class Emitter(Thread):
             self.inq.add(bucket['d'])
             self.count += 1
 
-inq = IncomingQueue('wide', None, QUEUE_DIRECTORY)
-bucketreader = BucketReader()
+inq = IncomingQueue('wide', QUEUE_DIRECTORY)
+#bucketreader = BucketReader()
+bucketreader = SequenceBucketReader(100, 100)
 emitters = [Emitter(bucketreader, inq) for i in range(3)]
 for e in emitters:
     e.start()
@@ -51,4 +75,15 @@ for e in emitters:
         sys.stderr.write('\r%d %s' % (bucketreader.count, inq.get_status()))
 sys.stderr.write('\n')
 inq.close()
+
+# reading queue out
+nread = 0
+while 1:
+    o = inq.get(timeout=0.01)
+    if o is None: break
+    nread += 1
+
+print >>sys.stderr, "read out %d items" % nread
+
+    
 
