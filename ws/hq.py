@@ -217,8 +217,8 @@ class OpenQueueQuota(object):
             #self.lock.notify()
             
 class HashSplitIncomingQueue(IncomingQueue):
-    def __init__(self, window_bits=54, **kwargs):
-        self.opener = OpenQueueQuota()
+    def __init__(self, window_bits=54, maxopens=256, **kwargs):
+        self.opener = OpenQueueQuota(maxopens=maxopens)
         if window_bits < 1 or window_bits > 63:
             raise ValueError, 'window_bits must be 1..63'
         self.window_bits = window_bits
@@ -228,6 +228,15 @@ class HashSplitIncomingQueue(IncomingQueue):
         maxsize = 1000*1000*1000 / self.nwindows
         IncomingQueue.__init__(self, opener=self.opener, maxsize=maxsize,
                                **kwargs)
+
+    @property
+    def maxopens(self):
+        return self.opener.maxopens
+    @maxopens.setter
+    def set_maxopens(self, v):
+        self.opener.maxopens = v
+
+    PARAMS = [('buffsize', int), ('maxopens', int)]
 
     def hash(self, curi):
         if 'id' in curi:
@@ -255,7 +264,7 @@ class CrawlJob(object):
         self.crawlinfodb = CrawlInfo(db.seen[self.jobname])
         self.scheduler = Scheduler(self.jobname, self.mapper, self.seen,
                                    self.crawlinfodb)
-        self.inq = HashSplitIncomingQueue(job=self.jobname, buffsize=1000)
+        self.inq = HashSplitIncomingQueue(job=self.jobname, buffsize=5000)
 
     def shutdown(self):
         print >>sys.stderr,"closing seen db"
@@ -576,6 +585,8 @@ class ClientAPI:
         o = None
         if on == 'scheduler':
             o = j.scheduler
+        elif on == 'inq':
+            o = j.inq
         if o is None:
             return dict(success=0, error='no such object', name=name)
         params = o.PARAMS

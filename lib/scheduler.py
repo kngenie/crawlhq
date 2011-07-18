@@ -204,7 +204,7 @@ class Scheduler(object):
 
         self.use_crawlinfo = False
         
-    PARAMS =[('use_crawlinfo', bool)]
+    PARAMS = [('use_crawlinfo', bool)]
 
     def shutdown(self):
         for clq in self.clients.values():

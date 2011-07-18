@@ -24,6 +24,7 @@ class FileEnqueue(object):
         self.buffer_size = buffer
         if self.buffer_size > 0:
             self.buffer = []
+            self.bufflock = RLock()
 
         if self.maxage > 0:
             # XXX one monitor thread per FileEnqueue is too much
@@ -41,7 +42,7 @@ class FileEnqueue(object):
         #if self.opener: self.opener.opened(self)
 
     def _close(self):
-        if self.buffer_size > 0 and self.buffer:
+        if self.buffer_size > 0:
             self._flush()
         self.file.close()
         self.file = None
@@ -81,36 +82,46 @@ class FileEnqueue(object):
             finally:
                 self.lock.release()
 
-    def _flush(self):
+    def _writeout(self, data):
+        with self.lock:
+            if self.file is None:
+                self.open()
+            for s in data:
+                self.file.write(' ')
+                self.file.write(s)
+                self.file.write('\n')
+            if self.size() > self.maxsize:
+                self.close()
+        
+    def _flush(self, async=False):
         '''assuming lock is in place'''
-        if self.file is None:
-            self.open()
-        for s in self.buffer:
-            self.file.write(' ')
-            self.file.write(s)
-            self.file.write('\n')
-        del self.buffer[:]
-        if self.size() > self.maxsize:
-            self.close()
+        if self.buffer_size > 0:
+            flushthis = None
+            with self.bufflock:
+                if len(self.buffer) > 0:
+                    flushthis = self.buffer
+                    self.buffer = []
+            if flushthis:
+                self._writeout(flushthis)
 
     def queue(self, curis):
         if not isinstance(curis, list):
             curis = [curis]
-        with self.lock:
-            if self.buffer_size > 0:
-                for curi in curis:
-                    self.buffer.append(cjson.encode(curi))
-                    if len(self.buffer) > self.buffer_size:
-                        self._flush()
-            else:
-                if self.file is None:
-                    self.open()
-                for curi in curis:
-                    self.file.write(' ')
-                    self.file.write(cjson.encode(curi))
-                    self.file.write('\n')
-                if self.size() > self.maxsize:
-                    self.close()
+        if self.buffer_size > 0:
+            flushthis = None
+            while curis:
+                with self.bufflock:
+                    while curis:
+                        self.buffer.append(cjson.encode(curis.pop(0)))
+                        if len(self.buffer) > self.buffer_size:
+                            flushthis = self.buffer
+                            self.buffer = []
+                            break
+                if flushthis:
+                    self._writeout(flushthis)
+                    flushthis = None
+        else:
+            self._writeout(cjson.encode(curi) for curi in curis)
 
     def age(self):
         return time.time() - self.starttime

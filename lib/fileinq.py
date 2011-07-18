@@ -15,7 +15,7 @@ class IncomingQueue(object):
     # settings
     def __init__(self, job, qdirbase=QUEUE_DIRECTORY,
                  noupdate=False, opener=None, buffsize=0,
-                 maxsize = 1000*1000*1000):
+                 maxsize=1000*1000*1000):
         self.job = job
         # ensure job directory exists
         self.qdir = os.path.join(qdirbase, job)
@@ -38,6 +38,14 @@ class IncomingQueue(object):
 
         # dequeue side
         self.rqfile = FileDequeue(self.qdir)
+
+    @property
+    def buffsize(self):
+        self.qfiles[0].buffer_size
+    @buffsize.setter
+    def set_buffsize(self, v):
+        for enq in self.qfils:
+            enq.buffer_size = v
 
     def __del__(self):
         self.close()
