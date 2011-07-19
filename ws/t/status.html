@@ -1,7 +1,4 @@
-<%
-import locale
-locale.setlocale(locale.LC_ALL, 'en_US')
-%>
+$def with(jobs)
 <html>
 <head>
 <title>Crawl Headquarters</title>
@@ -17,47 +14,46 @@ td.n { text-align: right; }
 <h1>Crawl Headquarters</h1>
 <div>
 <h2>Jobs (${len(jobs)})</h2>
-% for i, j in enumerate(jobs):
-<div class="job" jobname="${j.name}">
-  <div class="jtitle">${i+1}: ${j.name}</div>
-  <div class="jobdetail">
-    <span>Seen: <span id="seencount">${format(j.seen, 'n')}</span></span>
-    <span>Inq: ${format(j.queue.inqcount, 'n')}</span>
-    <button id="update-jobstat">Update</button>
+$for i, j in enumerate(jobs):
+  <div class="job" jobname="${j.name}">
+    <div class="jtitle">${i+1}: ${j.name}</div>
+    <div class="jobdetail">
+      <span>Seen: <span id="seencount">${format(j.seen, 'n')}</span></span>
+      <span>Inq: ${format(j.queue.inqcount, 'n')}</span>
+      <button id="update-jobstat">Update</button>
+    </div>
+    <div>
+      <button>Reset</button>
+      <button>Flush</button>
+      <button>Seed</button>
+    </div>
+    <h3><a href="#" class="showstatus">Status</a></h3>
+    <div class="jobstatus">
+    </div>
+    <h3>Query</h3>
+    <form id="seencheck_${j.name}" class="seencheck" job="${j.name}">
+    Type URL: <input type="text" size="100" name="url" id="url">
+    <input type="submit" value="Check">
+    </form>
+    <div id="seencheckresult_${j.name}"></div>
   </div>
-  <div>
-    <button>Reset</button>
-    <button>Flush</button>
-    <button>Seed</button>
-  </div>
-  <h3><a href="#" class="showstatus">Status</a></h3>
-  <div class="jobstatus">
-  </div>
-  <h3>Query</h3>
-  <form id="seencheck_${j.name}" class="seencheck" job="${j.name}">
-  Type URL: <input type="text" size="100" name="url" id="url">
-  <input type="submit" value="Check">
-  </form>
-  <div id="seencheckresult_${j.name}"></div>
-</div>
-% endfor
+$# % endfor
 <div><button>Add Job</button></div>
 </div>
 </body>
 <script type="text/javascript">
-(function($){
 function schedule() {
-  var url = $('[name="url"]', this).val();
+  var url = jQuery('[name="url"]', this).val();
   if (url) {
     var job = getjobname(this);
     this.disabled = true;
     var b = this;
-    $.ajax('jobs/'+job+'/discovered', {
+    jQuery.ajax('jobs/'+job+'/discovered', {
       type:'POST',
       data:{u:url},
       dataType:'json',
       success:function(data, status, xhr) {
-        $('#seencheckresult_'+job).html(data.scheduled ? 'scheduled'
+        jQuery('#seencheckresult_'+job).html(data.scheduled ? 'scheduled'
           : 'already seen');
       },
     });
@@ -71,8 +67,8 @@ function seencheck(ev) {
   if (!url.match('http://'))
     url = 'http://' + url;
   //console.log(url);
-  $('#seencheckresult_'+job).empty();
-  $.ajax('status/q/seen', {
+  jQuery('#seencheckresult_'+job).empty();
+  jQuery.ajax('status/q/seen', {
     data:{u:url, j:job},
     dataType:'json',
     success:function(data, status, xhr) {
@@ -80,8 +76,8 @@ function seencheck(ev) {
       var u = data.d;
       if (u == null) {
         var b = document.createElement('button');
-        $(b).html('Schedule').click(schedule);
-        $('#seencheckresult_'+job).text('not seen ').append(b);
+        jQuery(b).html('Schedule').click(schedule);
+        jQuery('#seencheckresult_'+job).text('not seen ').append(b);
       } else {
         var tbl = document.createElement('table');
         tbl.border = '1';
@@ -100,7 +96,7 @@ function seencheck(ev) {
           tr.insertCell(-1).innerHTML = 'fp';
           tr.insertCell(-1).innerHTML = u.fp;
         }
-        $('#seencheckresult_'+job).empty().append(tbl);
+        jQuery('#seencheckresult_'+job).empty().append(tbl);
       }
     }
   });
@@ -111,13 +107,13 @@ var last_inq_in = 0;
 var last_inq_out = 0;
 function renderstatus(data, status, xhr) {
   //console.log(data);
-  var d = $('.jobstatus', '.job[jobname="'+data.job+'"]');
+  var d = jQuery('.jobstatus', '.job[jobname="'+data.job+'"]');
   d.empty();
-  d.append($(document.createElement('div'))
+  d.append(jQuery(document.createElement('div'))
       .append('WorkQueueSize: ', data.workqueuesize));
   var inq = data.inq;
   if (inq) {
-    var inqdiv = $(document.createElement('div'));
+    var inqdiv = jQuery(document.createElement('div'));
     var in_text = 'in=' + inq.addedcount;
     var out_text = 'out=' + inq.processedcount;
     var now = (new Date()).getTime();
@@ -142,31 +138,31 @@ function renderstatus(data, status, xhr) {
   if (sch) {
     var clients = sch.clients;
     if (clients) {
-      d.append($(document.createElement('div')).html('clients:'));
-      var tbl = $(document.createElement('table')).attr('border','1')
+      d.append(jQuery(document.createElement('div')).html('clients:'));
+      var tbl = jQuery(document.createElement('table')).attr('border','1')
         .addClass('Clients');
       var r = tbl.get(0).insertRow(-1);
-      $.each(['id','active','fed','scheduled','next','worksets'],
-             function(i, s){ $(r.insertCell(-1)).text(s); });
-      $.each(clients, function(k, v){
+      jQuery.each(['id','active','fed','scheduled','next','worksets'],
+             function(i, s){ jQuery(r.insertCell(-1)).text(s); });
+      jQuery.each(clients, function(k, v){
           r = tbl.get(0).insertRow(-1);
-          $(r).addClass('client');
-          $(r.insertCell(-1)).text(k).attr({align:'right'});
-          $.each(['activecount','feedcount','scheduledcount','next','worksetcount'],
-                 function(i, p){ $(r.insertCell(-1)).text(v[p]).attr({align:'right'}); });
+          jQuery(r).addClass('client');
+          jQuery(r.insertCell(-1)).text(k).attr({align:'right'});
+          jQuery.each(['activecount','feedcount','scheduledcount','next','worksetcount'],
+                 function(i, p){ jQuery(r.insertCell(-1)).text(v[p]).attr({align:'right'}); });
         });
       d.append(tbl);
     }
   }
 }
 function getjobname(e) {
-  return $(e).closest('.job').attr('jobname');
+  return jQuery(e).closest('.job').attr('jobname');
 }
 function showstatus(ev) {
   ev.preventDefault();
   var job = getjobname(this);
   if (!job) { alert('failed to identify job name'); return; }
-  $.ajax('jobs/'+job+'/status', {
+  jQuery.ajax('jobs/'+job+'/status', {
     dataType:'json',
     success: renderstatus
   });
@@ -179,20 +175,19 @@ function with_comma(n) {
   return digits.join('');  
 }
 function render_jobstat(data) {
-  $('#seencount').text(with_comma(data.seencount)).removeClass('loading');
+  jQuery('#seencount').text(with_comma(data.seencount)).removeClass('loading');
 }
 function update_jobstat() {
   var job = getjobname(this);
-  $('#seencount').addClass('loading');
-  $.ajax('status/q/jobstat', {
+  jQuery('#seencount').addClass('loading');
+  jQuery.ajax('status/q/jobstat', {
     data:{job:job},
     dataType:'json',
     success: render_jobstat
   });
 }
-$('.seencheck').submit(seencheck);
-$('.showstatus').click(showstatus);
-$('#update-jobstat').click(update_jobstat);
-})(jQuery);
+jQuery('.seencheck').submit(seencheck);
+jQuery('.showstatus').click(showstatus);
+jQuery('#update-jobstat').click(update_jobstat);
 </script>
 </html>

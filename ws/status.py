@@ -13,8 +13,6 @@ import json
 import time
 import re
 import itertools
-from mako.template import Template
-from mako.lookup import TemplateLookup
 from cfpgenerator import FPGenerator
 from urlparse import urlsplit, urlunsplit
 import threading
@@ -40,11 +38,16 @@ def lref(name):
 class Status:
     '''implements control web user interface for crawl headquarters'''
     def __init__(self):
-        self.templates = TemplateLookup(directories=[lref('t')])
+        #self.templates = TemplateLookup(directories=[lref('t')])
+        tglobals = dict(format=format)
+        self.templates = web.template.render(lref('t'), globals=tglobals)
 
-    def render(self, tmpl, **kw):
-        t = self.templates.get_template(tmpl)
-        return t.render(**kw)
+    def render(self, tmpl, *args, **kw):
+        #t = self.templates.get_template(tmpl)
+        #return t.render(**kw)
+        # note self.templates[tmpl] does not work.
+        t = getattr(self.templates, tmpl)
+        return t(*args)
 
     def GET(self):
         jobs = [storify(j) for j in db.jobconfs.find()]
@@ -58,9 +61,8 @@ class Status:
         db.connection.end_request()
         
         web.header('content-type', 'text/html')
-        return self.render('status.html', jobs=jobs)
-
-        return html
+        #return self.render('status.html', jobs=jobs)
+        return self.render('status', jobs)
 
 class Query:
     def __init__(self):
