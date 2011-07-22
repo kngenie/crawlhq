@@ -148,9 +148,9 @@ class Seen(object):
     def _open(self):
         print >>sys.stderr, "opening seen-db %s" % self.dbdir
         self.seendb = leveldb.IntHash(self.dbdir,
-                                      block_cache_size=4*(1024**3),
+                                      block_cache_size=16*(1024**3),
                                       block_size=4096,
-                                      max_open_files=512,
+                                      max_open_files=256,
                                       write_buffer_size=128*(1024**2))
         print >>sys.stderr, "seen-db %s is ready" % self.dbdir
 
