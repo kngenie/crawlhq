@@ -19,8 +19,12 @@ import threading
 import random
 import atexit
 
-mongo = pymongo.Connection()
-db = mongo.crawl
+try:
+    mongo = pymongo.Connection()
+    db = mongo.crawl
+except:
+    mongo = None
+    db = None
 
 urls = (
     '/?', 'Status',
@@ -38,18 +42,20 @@ def lref(name):
 class Status:
     '''implements control web user interface for crawl headquarters'''
     def __init__(self):
-        #self.templates = TemplateLookup(directories=[lref('t')])
         tglobals = dict(format=format)
         self.templates = web.template.render(lref('t'), globals=tglobals)
 
     def render(self, tmpl, *args, **kw):
-        #t = self.templates.get_template(tmpl)
-        #return t.render(**kw)
         # note self.templates[tmpl] does not work.
         t = getattr(self.templates, tmpl)
         return t(*args)
 
     def GET(self):
+        if db is None:
+            web.header('content-type', 'text/html')
+            return ('MongoDB connection is not available.'
+                    ' Make sure mongos is running on this host.')
+
         jobs = [storify(j) for j in db.jobconfs.find()]
         for j in jobs:
             qc = db.jobs[j.name].find({'co':{'$gte':0}}).count()
@@ -61,7 +67,6 @@ class Status:
         db.connection.end_request()
         
         web.header('content-type', 'text/html')
-        #return self.render('status.html', jobs=jobs)
         return self.render('status', jobs)
 
 class Query:

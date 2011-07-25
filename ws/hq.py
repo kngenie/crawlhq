@@ -32,15 +32,15 @@ urls = (
     )
 app = web.application(urls, globals())
 
-if 'mongo' not in globals():
-    mongohosts = ['localhost',
-                  'crawl451.us.archive.org',
-                  'crawl401.us.archive.org',
-                  'crawl402.us.archive.org',
-                  'crawl403.us.archive.org']
-    mongo = pymongo.Connection(host=mongohosts, port=27017)
-db = mongo.crawl
-atexit.register(mongo.disconnect)
+# if 'mongo' not in globals():
+#     mongohosts = ['localhost',
+#                   'crawl451.us.archive.org',
+#                   'crawl401.us.archive.org',
+#                   'crawl402.us.archive.org',
+#                   'crawl403.us.archive.org']
+#     mongo = pymongo.Connection(host=mongohosts, port=27017)
+# db = mongo.crawl
+# atexit.register(mongo.disconnect)
 
 # _fp12 = FPGenerator(0xE758000000000000, 12)
 _fp31 = FPGenerator(0xBA75BB4300000000, 31)
@@ -259,12 +259,15 @@ class HashSplitIncomingQueue(IncomingQueue):
 
 class CrawlJob(object):
     NWORKSETS_BITS = 8
-    #NWORKSETS = 1 << NWORKSETS_BITS
+
     def __init__(self, jobname):
         self.jobname = jobname
-        self.mapper = CrawlMapper(db, self.jobname, self.NWORKSETS_BITS)
+        self.mongo = pymongo.Connection()
+        self.db = self.mongo.crawl
+        self.mapper = CrawlMapper(self.db, self.jobname,
+                                  self.NWORKSETS_BITS)
         self.seen = Seen(dbdir='/1/crawling/hq/seen')
-        self.crawlinfodb = CrawlInfo(db.seen[self.jobname])
+        self.crawlinfodb = CrawlInfo(self.db.seen[self.jobname])
         self.scheduler = Scheduler(self.jobname, self.mapper, self.seen,
                                    self.crawlinfodb)
         self.inq = HashSplitIncomingQueue(job=self.jobname, buffsize=5000)
@@ -276,6 +279,8 @@ class CrawlJob(object):
         self.scheduler.shutdown()
         logging.info("closing incoming queues")
         self.inq.close()
+        logging.info("dropping MongoDB connection")
+        self.mongo.disconnect()
         logging.info("done.")
 
     def get_status(self):
@@ -431,7 +436,7 @@ class ClientAPI:
         result['t'] = time.time() - start
 
         logging.debug("mfinished %s", result)
-        db.connection.end_request()
+        self.mongo.end_request()
         return result
 
     def post_finished(self, job):
@@ -443,7 +448,7 @@ class ClientAPI:
         result = hq.get_job(job).finished([curi])
         result['t'] = time.time() - start
         logging.debug("finished %s", result)
-        db.connection.end_request()
+        self.mongo.end_request()
         return result
         
     def post_discovered(self, job):
@@ -459,7 +464,7 @@ class ClientAPI:
         result = dict(processed=0, scheduled=0)
         hq.get_job(job).discovered([p])
         result.update(processed=1)
-        db.connection.end_request()
+        self.mongo.end_request()
         return result
 
     def post_mdiscovered(self, job):
@@ -485,7 +490,7 @@ class ClientAPI:
 
         result.update(t=(time.time() - start))
         logging.debug("mdiscovered %s", result)
-        db.connection.end_request()
+        self.mongo.end_request()
         return result
             
     def do_processinq(self, job):
@@ -502,7 +507,7 @@ class ClientAPI:
         result.update(hq.get_job(job).processinq(maxn))
         
         result.update(t=(time.time() - start))
-        db.connection.end_request()
+        self.mongo.end_request()
         return result
 
     def do_feed(self, job):
@@ -516,7 +521,7 @@ class ClientAPI:
         # return an JSON array of objects with properties:
         # uri, path, via, context and data
         r = hq.get_job(job).feed((name, nodes), count)
-        db.connection.end_request()
+        self.mongo.end_request()
         logging.debug("feed %s/%s %s in %.4fs",
                       name, nodes, len(r), time.time() - start)
         web.header('content-type', 'text/json')
@@ -533,7 +538,7 @@ class ClientAPI:
             r.update(msg='name and nodes are required')
             return r
         r.update(hq.get_job(job).reset((name, nodes)))
-        db.connection.end_request()
+        self.mongo.end_request()
         logging.info("reset %s", str(r))
         # TODO: return number of URIs reset
         return r
@@ -541,7 +546,7 @@ class ClientAPI:
     def do_flush(self, job):
         '''flushes cached objects into database for safe shutdown'''
         hq.get_job(job).flush()
-        db.connection.end_request()
+        self.mongo.end_request()
         r = dict(ok=1)
         return r
 
@@ -551,7 +556,7 @@ class ClientAPI:
         if u:
             del u['_id']
         result = dict(u=u)
-        db.connection.end_request()
+        self.mongo.end_request()
         return result
 
     def do_status(self, job):
