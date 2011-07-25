@@ -239,7 +239,7 @@ class FileDequeue(object):
             new_rqfiles.sort()
             self.qfiles_available(new_rqfiles)
         else:
-            logiging.debug("no new queue file was found")
+            logging.debug("no new queue file was found")
 
     def next_rqfile(self, timeout=0.0):
         '''blocks until next qfile becomes available'''
