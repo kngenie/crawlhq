@@ -28,6 +28,9 @@ class IncomingQueue(object):
         self.maxage = 0.0 # no aging
         self.maxsize = maxsize
 
+        # dequeue side
+        self.rqfile = FileDequeue(self.qdir)
+
         # multiple queue files
         # TODO: current code does not take advantage of having multiple
         # files to write into. it would take asynchronous writing.
@@ -36,14 +39,11 @@ class IncomingQueue(object):
                                    buffer=buffsize)
                        for i in range(self.num_queues())]
 
-        # dequeue side
-        self.rqfile = FileDequeue(self.qdir)
-
     @property
     def buffsize(self):
         self.qfiles[0].buffer_size
     @buffsize.setter
-    def set_buffsize(self, v):
+    def buffsize(self, v):
         for enq in self.qfils:
             enq.buffer_size = v
 

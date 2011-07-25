@@ -23,6 +23,9 @@ from filequeue import FileEnqueue, FileDequeue
 from scheduler import Scheduler
 import leveldb
 from executor import *
+import logging
+
+logging.basicConfig()
 
 urls = (
     '/(.*)/(.*)', 'ClientAPI',
@@ -146,18 +149,18 @@ class Seen(object):
         self.ready.set()
 
     def _open(self):
-        print >>sys.stderr, "opening seen-db %s" % self.dbdir
+        logging.info("opening seen-db %s", self.dbdir)
         self.seendb = leveldb.IntHash(self.dbdir,
                                       block_cache_size=16*(1024**3),
                                       block_size=4096,
                                       max_open_files=256,
                                       write_buffer_size=128*(1024**2))
-        print >>sys.stderr, "seen-db %s is ready" % self.dbdir
+        logging.info("seen-db %s is ready", self.dbdir)
 
     def close(self):
-        print >>sys.stderr, "closing leveldb..."
+        logging.info("closing leveldb...")
         self.seendb.close()
-        print >>sys.stderr, "closing leveldb...done"
+        logging.info("closing leveldb...done")
         self.seendb = None
 
     @staticmethod
@@ -199,11 +202,11 @@ class OpenQueueQuota(object):
         self.opens = set()
 
     def opening(self, fileq):
-        #print >>sys.stderr, "opening %s" % fileq
+        logging.debug("opening %s", fileq)
         with self.lock:
             while len(self.opens) >= self.maxopens:
                 for q in list(self.opens):
-                    #print >>sys.stderr, "  try closing %s" % q
+                    logging.debug("  try closing %s", q)
                     if q.close(rollover=False, blocking=False):
                         break
                 # if everybody's busy (unlikely), keep trying in busy loop
@@ -211,7 +214,7 @@ class OpenQueueQuota(object):
             self.opens.add(fileq)
 
     def closed(self, fileq):
-        #print >>sys.stderr, "closed %s" % fileq
+        logging.debug("closed %s", fileq)
         with self.lock:
             self.opens.discard(fileq)
             #self.lock.notify()
@@ -233,7 +236,7 @@ class HashSplitIncomingQueue(IncomingQueue):
     def maxopens(self):
         return self.opener.maxopens
     @maxopens.setter
-    def set_maxopens(self, v):
+    def maxopens(self, v):
         self.opener.maxopens = v
 
     PARAMS = [('buffsize', int), ('maxopens', int)]
@@ -267,13 +270,13 @@ class CrawlJob(object):
         self.inq = HashSplitIncomingQueue(job=self.jobname, buffsize=5000)
 
     def shutdown(self):
-        print >>sys.stderr,"closing seen db"
+        logging.info("closing seen db")
         self.seen.close()
-        print >>sys.stderr, "shutting down scheduler"
+        logging.info("shutting down scheduler")
         self.scheduler.shutdown()
-        print >>sys.stderr, "closing incoming queues"
+        logging.info("closing incoming queues")
         self.inq.close()
-        print >>sys.stderr, "done."
+        logging.info("done.")
 
     def get_status(self):
         r = dict(job=self.jobname, hq=id(self))
@@ -357,6 +360,15 @@ class Headquarters(object):
             r['worksets'] = sch.get_workset_status()
         return r
 
+    PARAMS = [('loglevel', int)]
+
+    @property
+    def loglevel(self):
+        return logging.getLogger('root').getEffectiveLevel()
+    @loglevel.setter
+    def loglevel(self, level):
+        logging.getLogger('root').setLevel(level)
+
 executor = ThreadPoolExecutor(poolsize=4)
 hq = Headquarters()
 atexit.register(executor.shutdown)
@@ -418,7 +430,7 @@ class ClientAPI:
         result = hq.get_job(job).finished(curis)
         result['t'] = time.time() - start
 
-        print >>sys.stderr, "mfinished ", result
+        logging.debug("mfinished %s", result)
         db.connection.end_request()
         return result
 
@@ -430,7 +442,7 @@ class ClientAPI:
         start = time.time()
         result = hq.get_job(job).finished([curi])
         result['t'] = time.time() - start
-        print >>sys.stderr, "finished", result
+        logging.debug("finished %s", result)
         db.connection.end_request()
         return result
         
@@ -472,7 +484,7 @@ class ClientAPI:
         result.update(hq.get_job(job).discovered(curis))
 
         result.update(t=(time.time() - start))
-        print >>sys.stderr, "mdiscovered %s" % result
+        logging.debug("mdiscovered %s", result)
         db.connection.end_request()
         return result
             
@@ -491,7 +503,6 @@ class ClientAPI:
         
         result.update(t=(time.time() - start))
         db.connection.end_request()
-        #print >>sys.stderr, "processinq %s" % result
         return result
 
     def do_feed(self, job):
@@ -506,9 +517,8 @@ class ClientAPI:
         # uri, path, via, context and data
         r = hq.get_job(job).feed((name, nodes), count)
         db.connection.end_request()
-        print >>sys.stderr, "feed %s/%s %s in %.4fs" % (
-            name, nodes, len(r), time.time() - start)
-        #print >>sys.stderr, str(r)
+        logging.debug("feed %s/%s %s in %.4fs",
+                      name, nodes, len(r), time.time() - start)
         web.header('content-type', 'text/json')
         return self.jsonres(r)
 
@@ -518,13 +528,13 @@ class ClientAPI:
         name = int(p.name)
         nodes = int(p.nodes)
         r = dict(name=name, nodes=nodes)
-        print >>sys.stderr, "received reset request: %s" % str(r)
+        logging.info("received reset request: %s", str(r))
         if name is None or nodes is None:
             r.update(msg='name and nodes are required')
             return r
         r.update(hq.get_job(job).reset((name, nodes)))
         db.connection.end_request()
-        print >>sys.stderr, "reset %s" % str(r)
+        logging.info("reset %s", str(r))
         # TODO: return number of URIs reset
         return r
 
@@ -558,20 +568,13 @@ class ClientAPI:
         web.debug(web.data())
         return str(web.ctx.env)
 
-    def do_setupindex(self, job):
-        db.seen.ensure_index([('u.u1', 1), ('u.h', 1)])
-        db.seen.ensure_index([('co', 1), ('ws', 1)])
-        #db.jobs[job].ensure_index([('u.u1', 1), ('u.h', 1)])
-        #db.jobs[job].ensure_index([('co', 1), ('fp', 1)])
-
-        r = dict(job=job, action='setupindex', sucess=1)
-        return r
-
     def do_rehash(self, job):
         return hq.rehash(job)
 
     def do_repairseen(self, job):
+        logging.info('repairing seen-db')
         hq.get_job(job).seen.repair()
+        logging.info('repairing seen-db done')
         return dict(ok=1)
 
     def do_param(self, job):
@@ -582,11 +585,7 @@ class ClientAPI:
             return dict(success=0, error='bad parameter name', name=name)
         on, pn = nc
         j = hq.get_job(job)
-        o = None
-        if on == 'scheduler':
-            o = j.scheduler
-        elif on == 'inq':
-            o = j.inq
+        o = dict(scheduler=j.scheduler, inq=j.inq, hq=hq).get(on)
         if o is None:
             return dict(success=0, error='no such object', name=name)
         params = o.PARAMS
@@ -607,7 +606,9 @@ class ClientAPI:
                 setattr(o, pe[0], r['nv'])
             except ValueError:
                 r.update(success=0, error='bad value')
-        print >>sys.stderr, "param: %s" % r
+            except AttributeError as ex:
+                r.update(success=0, error=str(ex), o=str(o), a=pe[0])
+        logging.info("param: %s", r)
         return r
              
 if __name__ == "__main__":

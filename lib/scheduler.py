@@ -10,6 +10,7 @@ import random
 from Queue import Queue, Empty
 import traceback
 from filequeue import FileEnqueue, FileDequeue
+import logging
 
 #_fp31 = FPGenerator(0xBA75BB4300000000, 31)
 
@@ -72,7 +73,7 @@ class ClientQueue(object):
         #self.job = job
         self.worksets = worksets
         if len(self.worksets) == 0:
-            print >>sys.stderr, "%s: no worksets" % self
+            logging.warn("%s: no worksets", self)
         # persistent index into worksets
         self.next = 0
         self.feedcount = 0
@@ -263,7 +264,7 @@ class Scheduler(object):
             worksets = [self.worksets[i] for i in self.mapper.wsidforclient(client)]
             q = ClientQueue(self.job, worksets)
             self.clients[clid] = q
-            print >>sys.stderr, "new ClientQueue created for clid=%s" % clid
+            logging.debug("new ClientQueue created for clid=%s", clid)
         return q
 
     # def workset(self, curi):
@@ -365,8 +366,8 @@ class Scheduler(object):
             self.crawlinfo.update_crawlinfo(curis)
             t = time.time() - t0
             if t / len(curis) > 0.5:
-                print >>sys.stderr, "slow update_crawlinfo: %s %.3fs/%d" % (
-                    client, t, len(curis))
+                logging.info("slow update_crawlinfo: %s %.3fs/%d",
+                             client, t, len(curis))
         return curis
 
     # Scheduler - reset request

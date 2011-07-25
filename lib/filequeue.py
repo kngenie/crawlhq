@@ -4,6 +4,7 @@ from threading import Thread, RLock, Condition, Event
 import time
 import cjson
 import mmap
+import logging
 
 EMPTY_PAUSE = 15.0
 
@@ -38,7 +39,15 @@ class FileEnqueue(object):
 
     def _open(self, fn):
         if self.opener: self.opener.opening(self)
-        self.file = open(os.path.join(self.qdir, fn), 'w+')
+        qf = os.path.join(self.qdir, fn)
+        try:
+            self.file = open(qf, 'w+')
+        except IOError as ex:
+            if ex.errno == 2:
+                os.makedirs(self.qdir)
+                self.file = open(qf, 'w+')
+            else:
+                raise
         #if self.opener: self.opener.opened(self)
 
     def _close(self):
@@ -72,7 +81,8 @@ class FileEnqueue(object):
                 if self.file: self._close()
                 if rollover:
                     self.closed.set()
-                    print >>sys.stderr, "renaming %s/%s to %s" % (self.qdir, self.openfilename, self.filename)
+                    logging.debug("renaming %s/%s to %s", self.qdir,
+                                  self.openfilename, self.filename)
                     os.rename(os.path.join(self.qdir, self.openfilename),
                               os.path.join(self.qdir, self.filename))
                     self.filename = None
@@ -176,7 +186,7 @@ class QueueFileReader(object):
 
 class FileDequeue(object):
     '''multi-queue file reader'''
-    def __init__(self, qdir, noupdate=False):
+    def __init__(self, qdir, noupdate=False, norecover=False):
         self.qdir = qdir
         # timestamp of the last qfile
         self.rqfile = None
@@ -184,6 +194,26 @@ class FileDequeue(object):
         self.noupdate = noupdate
 
         self.qfile_read = 0
+        if not norecover:
+            self._recover()
+
+    def _recover(self):
+        '''fix qfiles left open'''
+        logging.debug('recovering %s', self.qdir)
+        try:
+            ls = os.listdir(self.qdir)
+        except:
+            logging.warn('listdir failed on %s', self.qdir, exc_info=1)
+            return
+        for f in ls:
+            if f.endswith('.open'):
+                try:
+                    os.rename(os.path.join(self.qdir, f),
+                              os.path.join(self.qdir, f[:-5]))
+                except:
+                    logging.warn('rename %s to %s failed', f, f[:-5],
+                                 exc_info=1)
+        logging.debug('recovering %s done', self.qdir)
 
     def close(self):
         if self.rqfile:
@@ -195,7 +225,7 @@ class FileDequeue(object):
 
     def scan(self):
         '''scan qdir for new file'''
-        print >>sys.stderr, "scanning %s for new qfile" % self.qdir
+        logging.debug("scanning %s for new qfile", self.qdir)
         ls = os.listdir(self.qdir)
         curset = set(self.rqfiles)
         new_rqfiles = []
@@ -205,11 +235,11 @@ class FileDequeue(object):
             if f not in curset:
                 new_rqfiles.append(f)
         if new_rqfiles:
-            print >>sys.stderr, "found %d new queue file(s)" % len(new_rqfiles)
+            logging.debug("found %d new queue file(s)", len(new_rqfiles))
             new_rqfiles.sort()
             self.qfiles_available(new_rqfiles)
         else:
-            print >>sys.stderr, "no new queue file was found"
+            logiging.debug("no new queue file was found")
 
     def next_rqfile(self, timeout=0.0):
         '''blocks until next qfile becomes available'''
@@ -220,7 +250,7 @@ class FileDequeue(object):
             if self.rqfiles:
                 f = self.rqfiles.pop(0)
                 qpath = os.path.join(self.qdir, f)
-                print >>sys.stderr, "opening %s" % qpath
+                logging.debug("opening %s", qpath)
                 try:
                     self.rqfile = QueueFileReader(
                         qpath,
