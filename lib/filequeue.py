@@ -202,7 +202,10 @@ class FileDequeue(object):
         logging.debug('recovering %s', self.qdir)
         try:
             ls = os.listdir(self.qdir)
-        except:
+        except Exception as ex:
+            # no directory is fine
+            if isinstance(ex, OSError) and ex.errno == 2:
+                return
             logging.warn('listdir failed on %s', self.qdir, exc_info=1)
             return
         for f in ls:

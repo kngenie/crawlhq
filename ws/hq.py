@@ -316,6 +316,8 @@ class CrawlJob(object):
             if self.scheduler.schedule_unseen(furi):
                 result['scheduled'] += 1
             result['ts'] += (time.time() - t0)
+        # currently no access to MongoDB
+        #self.mongo.end_request()
         return result
 
     def makecuri(self, o):
@@ -323,13 +325,16 @@ class CrawlJob(object):
 
     def feed(self, client, n):
         curis = self.scheduler.feed(client, n)
-        return [self.makecuri(u) for u in curis]
+        r = [self.makecuri(u) for u in curis]
+        self.mongo.end_request()
+        return r
 
     def finished(self, curis):
         result = dict(processed=0)
         for curi in curis:
             self.scheduler.finished(curi)
             result['processed'] += 1
+        self.mongo.end_request()
         return result
 
     def reset(self, client):
@@ -436,7 +441,6 @@ class ClientAPI:
         result['t'] = time.time() - start
 
         logging.debug("mfinished %s", result)
-        self.mongo.end_request()
         return result
 
     def post_finished(self, job):
@@ -448,7 +452,6 @@ class ClientAPI:
         result = hq.get_job(job).finished([curi])
         result['t'] = time.time() - start
         logging.debug("finished %s", result)
-        self.mongo.end_request()
         return result
         
     def post_discovered(self, job):
@@ -464,7 +467,6 @@ class ClientAPI:
         result = dict(processed=0, scheduled=0)
         hq.get_job(job).discovered([p])
         result.update(processed=1)
-        self.mongo.end_request()
         return result
 
     def post_mdiscovered(self, job):
@@ -490,7 +492,6 @@ class ClientAPI:
 
         result.update(t=(time.time() - start))
         logging.debug("mdiscovered %s", result)
-        self.mongo.end_request()
         return result
             
     def do_processinq(self, job):
@@ -507,7 +508,6 @@ class ClientAPI:
         result.update(hq.get_job(job).processinq(maxn))
         
         result.update(t=(time.time() - start))
-        self.mongo.end_request()
         return result
 
     def do_feed(self, job):
@@ -521,7 +521,6 @@ class ClientAPI:
         # return an JSON array of objects with properties:
         # uri, path, via, context and data
         r = hq.get_job(job).feed((name, nodes), count)
-        self.mongo.end_request()
         logging.debug("feed %s/%s %s in %.4fs",
                       name, nodes, len(r), time.time() - start)
         web.header('content-type', 'text/json')
@@ -538,7 +537,6 @@ class ClientAPI:
             r.update(msg='name and nodes are required')
             return r
         r.update(hq.get_job(job).reset((name, nodes)))
-        self.mongo.end_request()
         logging.info("reset %s", str(r))
         # TODO: return number of URIs reset
         return r
@@ -546,7 +544,6 @@ class ClientAPI:
     def do_flush(self, job):
         '''flushes cached objects into database for safe shutdown'''
         hq.get_job(job).flush()
-        self.mongo.end_request()
         r = dict(ok=1)
         return r
 
@@ -556,7 +553,7 @@ class ClientAPI:
         if u:
             del u['_id']
         result = dict(u=u)
-        self.mongo.end_request()
+        #hq.mongo.end_request()
         return result
 
     def do_status(self, job):
