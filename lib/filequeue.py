@@ -181,7 +181,12 @@ class QueueFileReader(object):
                 l = self.map.readline()
                 if not self.noupdate:
                     self.map[markpos] = '#'
-                return cjson.decode(l)
+                try:
+                    return cjson.decode(l)
+                except Exception as ex:
+                    logging.warn('malformed line in %s at %d: %s', self.qfile,
+                                 markpos, str(ex))
+                    continue
             self.map.readline()
 
 class FileDequeue(object):
