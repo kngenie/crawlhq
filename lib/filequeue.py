@@ -237,7 +237,14 @@ class FileDequeue(object):
     def scan(self):
         '''scan qdir for new file'''
         logging.debug("scanning %s for new qfile", self.qdir)
-        ls = os.listdir(self.qdir)
+        try:
+            ls = os.listdir(self.qdir)
+        except Exception as ex:
+            if isinstance(ex, OSError) and ex.errno == 2:
+                logging.debug("qdir %s does not exit yet", self.qdir)
+            else:
+                logging.error("listdir failed on %s", self.qdir, exc_info=1)
+            return
         curset = set(self.rqfiles)
         new_rqfiles = []
         for f in ls:
