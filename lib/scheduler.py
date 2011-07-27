@@ -77,6 +77,7 @@ class ClientQueue(object):
         # persistent index into worksets
         self.next = 0
         self.feedcount = 0
+        self.lastfeed = None
 
         ## checkedout caches CURIs scheduled for this client until they are
         ## flushed to the database (they are likely be removed before getting
@@ -96,18 +97,22 @@ class ClientQueue(object):
 
     def get_status(self):
         r = dict(feedcount=self.feedcount,
+                 lastfeedcount=self.lastfeed,
                  next=self.next,
                  worksetcount=len(self.worksets))
         worksets = []
         scheduledcount = 0
         activecount = 0
+        finishedcount = 0
         for ws in self.worksets:
             worksets.append(ws.wsid)
             scheduledcount += ws.scheduledcount
             activecount += ws.activecount
+            finishedcount += ws.finishedcount
         r['worksets'] = worksets
         r['scheduledcount'] = scheduledcount
         r['activecount'] = activecount
+        r['finishedcount'] = finishedcount
         return r
         
     #def is_active(self, url):
@@ -178,7 +183,8 @@ class ClientQueue(object):
         #        self.checkedout[self.keyurl(curi['u'])] = curi
         #if len(self.checkedout) > self.CHECKEDOUT_SPILL_SIZE:
         #    executor.execute(self.spill_checkedout)
-        self.feedcount += len(r)
+        self.lastfeed = len(r)
+        self.feedcount += self.lastfeed
         return r
 
 class Scheduler(object):

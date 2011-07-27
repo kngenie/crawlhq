@@ -7,6 +7,7 @@ import time
 import cjson
 import mmap
 from filequeue import FileEnqueue, FileDequeue
+import logging
 
 QUEUE_DIRECTORY = '/1/incoming/hq'
 
@@ -65,7 +66,9 @@ class IncomingQueue(object):
 
     def get_status(self):
         return dict(addedcount=self.addedcount,
-                    processedcount=self.processedcount)
+                    processedcount=self.processedcount,
+                    queuefilecount=self.rqfile.qfile_count()
+                    )
 
     # override these two methods when writing into multiple queues
     def num_queues(self):

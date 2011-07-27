@@ -228,6 +228,9 @@ class FileDequeue(object):
             self.rqfile.close()
             self.rqfile = None
 
+    def qfile_count(self):
+        return len(self.rqfiles)
+
     def qfiles_available(self, qfiles):
         self.rqfiles.extend(qfiles)
 

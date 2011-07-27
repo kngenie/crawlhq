@@ -116,6 +116,7 @@ function renderstatus(data, status, xhr) {
     var inqdiv = jQuery(document.createElement('div'));
     var in_text = 'in=' + inq.addedcount;
     var out_text = 'out=' + inq.processedcount;
+    var nq_text = 'nqfiles=' + inq.queuefilecount;
     var now = (new Date()).getTime();
     var elapsed_ms = now - last_status_update;
     if (elapsed_ms < 3600000) {
@@ -128,7 +129,8 @@ function renderstatus(data, status, xhr) {
         out_text += ' (' + (Math.floor(out_speed * 10)/10) + ' URI/s)';
       }
     }
-    inqdiv.append('IncomingQueue: ' + in_text + ', ' + out_text);
+    inqdiv.append('IncomingQueue: ' + in_text + ', ' + out_text +
+		  ', ' + nq_text);
     last_status_update = now;
     last_inq_in = inq.addedcount;					
     last_inq_out = inq.processedcount;
@@ -142,13 +144,13 @@ function renderstatus(data, status, xhr) {
       var tbl = jQuery(document.createElement('table')).attr('border','1')
         .addClass('Clients');
       var r = tbl.get(0).insertRow(-1);
-      jQuery.each(['id','active','fed','scheduled','next','worksets'],
+      jQuery.each(['id','scheduled','fed','finished','next','worksets','lastfed'],
              function(i, s){ jQuery(r.insertCell(-1)).text(s); });
       jQuery.each(clients, function(k, v){
           r = tbl.get(0).insertRow(-1);
           jQuery(r).addClass('client');
           jQuery(r.insertCell(-1)).text(k).attr({align:'right'});
-          jQuery.each(['activecount','feedcount','scheduledcount','next','worksetcount'],
+          jQuery.each(['scheduledcount','feedcount','finishedcount','next','worksetcount','lastfeedcount'],
                  function(i, p){ jQuery(r.insertCell(-1)).text(v[p]).attr({align:'right'}); });
         });
       d.append(tbl);
