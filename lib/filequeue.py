@@ -160,6 +160,7 @@ class QueueFileReader(object):
     def __init__(self, qfile, noupdate=False):
         self.qfile = qfile
         self.noupdate = noupdate
+        self.map = None
         self.open()
     def open(self):
         self.fd = os.open(self.qfile, os.O_RDWR)
@@ -172,10 +173,13 @@ class QueueFileReader(object):
             os.close(self.fd)
             self.fd = -1
     def next(self):
+        if self.map is None:
+            logging.warn("QueueFileReader:next called on closed file:%s",
+                         self.qfile)
+            raise StopIteration
         while 1:
             mark = self.map.read(1)
-            if not mark:
-                raise StopIteration
+            if not mark: break
             if mark == ' ':
                 markpos = self.map.tell() - 1
                 l = self.map.readline()
@@ -185,9 +189,10 @@ class QueueFileReader(object):
                     return cjson.decode(l)
                 except Exception as ex:
                     logging.warn('malformed line in %s at %d: %s', self.qfile,
-                                 markpos, str(ex))
+                                 markpos, l)
                     continue
             self.map.readline()
+        raise StopIteration
 
 class FileDequeue(object):
     '''multi-queue file reader'''
@@ -305,7 +310,11 @@ class FileDequeue(object):
                 except StopIteration:
                     self.rqfile.close()
                     if not self.noupdate:
-                        os.unlink(self.rqfile.qfile)
+                        try:
+                            os.unlink(self.rqfile.qfile)
+                        except:
+                            logging.warn("unlink failed on %s",
+                                         self.rqfile.qfile, exc_info=1)
                     self.rqfile = None
                     if not self.next_rqfile(timeout):
                         return None
