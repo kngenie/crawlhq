@@ -228,7 +228,7 @@ class HashSplitIncomingQueue(IncomingQueue):
         # must be set before IncomingQueue.__init__()
         self.nwindows = (1 << 64 - self.window_bits)
         self.win_mask = self.nwindows - 1
-        maxsize = 1000*1000*1000 / self.nwindows
+        maxsize = 200*1000*1000 / self.nwindows
         IncomingQueue.__init__(self, opener=self.opener, maxsize=maxsize,
                                **kwargs)
 
