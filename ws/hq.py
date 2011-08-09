@@ -289,8 +289,8 @@ class CrawlJob(object):
         r['inq'] = self.inq and self.inq.get_status()
         return r
 
-    def get_workset_status(self, job):
-        r = dict(job=self.jobname, hq=id(self))
+    def get_workset_status(self):
+        r = dict(job=self.jobname, crawljob=id(self))
         if self.scheduler:
             r['sch'] = id(self.scheduler)
             r['worksets'] = self.scheduler.get_workset_status()
@@ -347,27 +347,25 @@ class Headquarters(object):
     '''now just a collection of CrawlJobs'''
     def __init__(self):
         self.jobs = {}
+        self.jobslock = threading.RLock()
 
     def shutdown(self):
         for job in self.jobs.values():
             job.shutdown()
 
     def get_job(self, jobname):
-        # TODO synchronize access to self.jobs
-        job = self.jobs.get(jobname)
-        if job is None:
-            job = self.jobs[jobname] = CrawlJob(jobname)
-        return job
+        with self.jobslock:
+            job = self.jobs.get(jobname)
+            if job is None:
+                job = self.jobs[jobname] = CrawlJob(jobname)
+            return job
 
         self.schedulers = {}
         self.incomingqueues = {}
 
     def get_workset_status(self, job):
-        r = dict(job=job, hq=id(self))
-        sch = self.schedulers.get(job)
-        if sch:
-            r['sch'] = id(sch)
-            r['worksets'] = sch.get_workset_status()
+        r = self.get_job(job).get_workset_status()
+        r['hq'] = id(self)
         return r
 
     PARAMS = [('loglevel', int)]
