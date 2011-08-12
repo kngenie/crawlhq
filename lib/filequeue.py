@@ -8,13 +8,14 @@ import logging
 
 EMPTY_PAUSE = 15.0
 
+from executor import *
+
 class FileEnqueue(object):
-    def __init__(self, qdir, maxage=30.0, suffix=None, opener=None,
-                 buffer=0):
+    def __init__(self, qdir, suffix=None, opener=None,
+                 buffer=0, executor=None):
         self.qdir = qdir
         self.opener = opener
 
-        self.maxage = float(maxage)
         self.maxsize = 1000*1000*1000 # 1GB
         self.suffix = suffix
 
@@ -27,15 +28,10 @@ class FileEnqueue(object):
             self.buffer = []
             self.bufflock = RLock()
 
-        if self.maxage > 0:
-            # XXX one monitor thread per FileEnqueue is too much
-            # share monitor threads among multiple FileQueues
-            self.rollover_thread = Thread(target=self.monitor)
-            self.rollover_thread.daemon = True
-            self.rollover_thread.start()
-
         self.file = None
         self.filename = None
+
+        self.executor = executor
 
     def _open(self, fn):
         if self.opener: self.opener.opening(self)
@@ -51,8 +47,8 @@ class FileEnqueue(object):
         #if self.opener: self.opener.opened(self)
 
     def _close(self):
-        if self.buffer_size > 0:
-            self._flush()
+        #if self.buffer_size > 0:
+        #    self._flush()
         self.file.close()
         self.file = None
         if self.opener: self.opener.closed(self)
@@ -72,11 +68,22 @@ class FileEnqueue(object):
             # simply re-open the .open file
             self._open(self.openfilename)
 
+    def rollover(self):
+        self.close(rollover=True, blocking=True)
+
+    def detach(self):
+        '''try closing self.file so that others can use it.
+           if file is busy or not open, return False,
+           otherwise close and return True.'''
+        return self.close(rollover=False, blocking=False)
+
     def close(self, rollover=True, blocking=True):
         '''set rollover to False to keep queue file .open'''
         if self.file is None and self.filename is None:
             return False
+        logging.debug('%s close:acquiring lock blocking=%s', id(self), blocking)
         if self.lock.acquire(blocking):
+            logging.debug('%s close:acquired file=%s', id(self), self.file)
             try:
                 if self.file: self._close()
                 if rollover:
@@ -91,25 +98,34 @@ class FileEnqueue(object):
                 return True
             finally:
                 self.lock.release()
+                logging.debug('%s close:released lock', id(self))
+        else:
+            return False
 
     def _writeout(self, data):
+        logging.debug('%s _writerout before lock', id(self))
         with self.lock:
+            logging.debug('%s _writeout inside lock', id(self))
             if self.file is None:
                 self.open()
             for s in data:
                 self.file.write(' ')
-                self.file.write(s)
+                self.file.write(cjson.encode(s))
                 self.file.write('\n')
             if self.size() > self.maxsize:
-                self.close()
+                self.rollover()
+        logging.debug('%s _writeout done', id(self))
         
-    def _flush(self, async=False):
+    def _flush(self):
         '''assuming lock is in place'''
         if self.buffer_size > 0:
             flushthis = None
             with self.bufflock:
                 if len(self.buffer) > 0:
-                    flushthis = self.buffer
+                    if self.executor:
+                        self.executor.execute(self._writeout, self.buffer)
+                    else:
+                        flushthis = self.buffer
                     self.buffer = []
             if flushthis:
                 self._writeout(flushthis)
@@ -122,38 +138,30 @@ class FileEnqueue(object):
             while curis:
                 with self.bufflock:
                     while curis:
-                        self.buffer.append(cjson.encode(curis.pop(0)))
+                        self.buffer.append(curis.pop(0))
                         if len(self.buffer) > self.buffer_size:
-                            flushthis = self.buffer
+                            if self.executor:
+                                self.executor.execute(self._writeout,
+                                                      self.buffer)
+                            else:
+                                flushthis = self.buffer
                             self.buffer = []
                             break
                 if flushthis:
                     self._writeout(flushthis)
                     flushthis = None
         else:
-            self._writeout(cjson.encode(curi) for curi in curis)
+            #self._writeout(cjson.encode(curi) for curi in curis)
+            if self.executor:
+                self.executor.execute(self._writeout, curis)
+            else:
+                self._writeout(curis)
 
     def age(self):
         return time.time() - self.starttime
 
     def size(self):
         return self.file.tell()
-
-    def monitor(self):
-        while 1:
-            self.opened.wait()
-            self.opened.clear()
-            ts = self.starttime
-            self.closed.wait(self.maxage)
-            # there's small chance of (though unlikely) race condition where
-            # new queue file gets opened before self.closed.is_set().
-            # self.starttime > ts detects this situation.
-            with self.lock:
-                #print >>sys.stderr, "closed=%s, starttime=%s, ts=%s" % (
-                #    self.closed.is_set(), self.starttime, ts)
-                if not self.closed.is_set():
-                    if self.starttime <= ts:
-                        self.close()
 
 class QueueFileReader(object):
     '''reads (dequeues) from single queue file'''

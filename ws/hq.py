@@ -25,7 +25,7 @@ import leveldb
 from executor import *
 import logging
 
-logging.basicConfig()
+logging.basicConfig(level=logging.WARN)
 
 urls = (
     '/(.*)/(.*)', 'ClientAPI',
@@ -204,20 +204,24 @@ class OpenQueueQuota(object):
     def opening(self, fileq):
         logging.debug("opening %s", fileq)
         with self.lock:
+            logging.debug("opening:locked")
             while len(self.opens) >= self.maxopens:
                 for q in list(self.opens):
                     logging.debug("  try closing %s", q)
-                    if q.close(rollover=False, blocking=False):
+                    if q.detach():
                         break
                 # if everybody's busy (unlikely), keep trying in busy loop
                 # sounds bad...
             self.opens.add(fileq)
+        logging.debug("opening:released")
 
     def closed(self, fileq):
         logging.debug("closed %s", fileq)
         with self.lock:
+            logging.debug("closed:locked")
             self.opens.discard(fileq)
             #self.lock.notify()
+        logging.debug("closed:released")
             
 class HashSplitIncomingQueue(IncomingQueue):
     def __init__(self, window_bits=54, maxopens=256, **kwargs):
@@ -270,7 +274,9 @@ class CrawlJob(object):
         self.crawlinfodb = CrawlInfo(self.db.seen[self.jobname])
         self.scheduler = Scheduler(self.jobname, self.mapper, self.seen,
                                    self.crawlinfodb)
-        self.inq = HashSplitIncomingQueue(job=self.jobname, buffsize=5000)
+        self.inq = HashSplitIncomingQueue(job=self.jobname, buffsize=500)
+
+        #self.discovered_executor = ThreadPoolExecutor(poolsize=1)
 
     def shutdown(self):
         logging.info("closing seen db")
@@ -282,6 +288,7 @@ class CrawlJob(object):
         logging.info("dropping MongoDB connection")
         self.mongo.disconnect()
         logging.info("done.")
+        #self.discovered_executor.shutdown()
 
     def get_status(self):
         r = dict(job=self.jobname, hq=id(self))
@@ -296,8 +303,13 @@ class CrawlJob(object):
             r['worksets'] = self.scheduler.get_workset_status()
         return r
         
+    #def discovered_async(self, curis):
+    #    return self.inq.add(curis)
+
     def discovered(self, curis):
         return self.inq.add(curis)
+        #self.discovered_executor.execute(self.discovered_async, curis)
+        #return dict(processed=len(curis))
 
     def processinq(self, maxn):
         '''process incoming queue. maxn paramter adivces

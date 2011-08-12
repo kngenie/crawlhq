@@ -24,7 +24,7 @@ class WorkSet(object):
         self.qdir = os.path.join(WorkSet.WORKSET_DIR,
                                  self.job, str(self.wsid))
 
-        self.enq = FileEnqueue(self.qdir, maxage=0.0)
+        self.enq = FileEnqueue(self.qdir)
         self.deq = FileDequeue(self.qdir)
 
         self.running = True
@@ -35,6 +35,8 @@ class WorkSet(object):
         self.activecount = 0
 
     def shutdown(self):
+        # _flush() should be part of close(), but not now
+        self.enq._flush()
         self.enq.close()
         self.deq.close()
 

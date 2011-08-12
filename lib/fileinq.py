@@ -8,6 +8,7 @@ import cjson
 import mmap
 from filequeue import FileEnqueue, FileDequeue
 import logging
+from executor import ThreadPoolExecutor
 
 QUEUE_DIRECTORY = '/1/incoming/hq'
 
@@ -26,7 +27,6 @@ class IncomingQueue(object):
         self.addedcount = 0
         self.processedcount = 0
 
-        self.maxage = 0.0 # no aging
         self.maxsize = maxsize
 
         # dequeue side
@@ -35,9 +35,11 @@ class IncomingQueue(object):
         # multiple queue files
         # TODO: current code does not take advantage of having multiple
         # files to write into. it would take asynchronous writing.
-        self.qfiles = [FileEnqueue(self.qdir, maxage=self.maxage,
+        self.write_executor = ThreadPoolExecutor(poolsize=2, queuesize=10)
+        self.qfiles = [FileEnqueue(self.qdir,
                                    suffix=str(i), opener=opener,
-                                   buffer=buffsize)
+                                   buffer=buffsize,
+                                   executor=self.write_executor)
                        for i in range(self.num_queues())]
 
     @property
@@ -62,12 +64,17 @@ class IncomingQueue(object):
 
     def shutdown(self):
         self.rqfile.close()
+        # _flush should be part of close, but not now.
+        for q in self.qfiles:
+            q._flush()
+        self.write_executor.shutdown()
         self.close()
 
     def get_status(self):
         return dict(addedcount=self.addedcount,
                     processedcount=self.processedcount,
-                    queuefilecount=self.rqfile.qfile_count()
+                    queuefilecount=self.rqfile.qfile_count(),
+                    writequeue=self.write_executor.work_queue.qsize()
                     )
 
     # override these two methods when writing into multiple queues
@@ -113,10 +120,10 @@ class SplitIncomingQueue(object):
         self.addedcount = 0
         self.processedcount = 0
 
-        self.maxage = 0.0 # no aging
         self.maxsize = 1000*1000*1000 # 1GB
 
-        self.enqs = [FileEnqueue(self.qdir, maxage=self.maxage, suffix=str(win))
+        self.queue_writer = AsyncFlusher()
+        self.enqs = [FileEnqueue(self.qdir, suffix=str(win))
                      for win in range(self.splitter.nqueues)]
 
         # dequeue side
@@ -130,6 +137,7 @@ class SplitIncomingQueue(object):
         self.close()
 
     def close(self):
+        self.write_executor.shutdown()
         for enq in self.enqs:
             enq.close()
 
