@@ -8,6 +8,10 @@ $def with(jobs)
 table { border-collapse:collapse; }
 td.n { text-align: right; }
 .loading { color: #666; }
+.wait {
+  padding-right: 18px;
+  background: transparent url(img/wait.gif) 100% 50% no-repeat;
+}
 </style>
 </head>
 <body>
@@ -166,7 +170,9 @@ function showstatus(ev) {
   if (!job) { alert('failed to identify job name'); return; }
   jQuery.ajax('jobs/'+job+'/status', {
     dataType:'json',
-    success: renderstatus
+    success: renderstatus,
+    beforeSend: function(){ jQuery(ev.target).addClass('wait'); },
+    complete: function() { jQuery(ev.target).removeClass('wait'); }
   });
 }
 function with_comma(n) {
