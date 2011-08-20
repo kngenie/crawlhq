@@ -384,10 +384,10 @@ class Headquarters(object):
 
     @property
     def loglevel(self):
-        return logging.getLogger('root').getEffectiveLevel()
+        return logging.getLogger().getEffectiveLevel()
     @loglevel.setter
     def loglevel(self, level):
-        logging.getLogger('root').setLevel(level)
+        logging.getLogger().setLevel(level)
 
 executor = ThreadPoolExecutor(poolsize=4)
 hq = Headquarters()
