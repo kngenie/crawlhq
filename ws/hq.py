@@ -27,6 +27,8 @@ import logging
 
 logging.basicConfig(level=logging.WARN)
 
+HQ_HOME = '/1/crawling/hq'
+
 urls = (
     '/(.*)/(.*)', 'ClientAPI',
     )
@@ -48,11 +50,12 @@ _fp31 = FPGenerator(0xBA75BB4300000000, 31)
 # _fp63 = FPGenerator(0xE1F8D6B3195D6D97, 63)
 # _fp64 = FPGenerator(0xD74307D3FD3382DB, 64)
 
-class CrawlMapper(object):
+class MongoCrawlMapper(object):
     '''maps client queue id to set of WorkSets'''
-    def __init__(self, db, job, nworksets_bits):
-        self.db = db
+    def __init__(self, job, nworksets_bits):
         self.job = job
+        self.mongo = pymongo.Connection()
+        self.db = self.mongo.crawl
         self.nworksets_bits = nworksets_bits
         self.nworksets = (1 << self.nworksets_bits)
         self.get_jobconf()
@@ -100,12 +103,20 @@ class CrawlMapper(object):
         hosthash = int(_fp31.fp(h) >> (64 - self.nworksets_bits))
         return hosthash
 
-class CrawlInfo(object):
+class MongoCrawlInfo(object):
     '''database of re-crawl infomation. keeps fetch result from previous
        crawl and makes it available in next cycle. this version uses MongoDB.'''
-    def __init__(self, coll):
-        self.coll = coll
+    def __init__(self, jobname):
+        self.jobname = jobname
+        self.mongo = pymongo.Connection()
+        self.db = self.mongo.crawl
+        self.coll = self.db.seen[self.jobname]
         
+    def shutdown(self):
+        self.coll = None
+        self.db = None
+        self.mongo.disconnect()
+
     def save_result(self, furi):
         if 'a' not in furi: return
         if 'id' in furi:
@@ -264,17 +275,18 @@ class HashSplitIncomingQueue(IncomingQueue):
 class CrawlJob(object):
     NWORKSETS_BITS = 8
 
-    def __init__(self, jobname):
+    def __init__(self, jobname, crawlinfo):
         self.jobname = jobname
-        self.mongo = pymongo.Connection()
-        self.db = self.mongo.crawl
-        self.mapper = CrawlMapper(self.db, self.jobname,
-                                  self.NWORKSETS_BITS)
-        self.seen = Seen(dbdir='/1/crawling/hq/seen')
-        self.crawlinfodb = CrawlInfo(self.db.seen[self.jobname])
+        self.mapper = MongoCrawlMapper(self.jobname,
+                                       self.NWORKSETS_BITS)
+        self.seen = Seen(dbdir=os.path.join(HQ_HOME, 'seen', self.jobname))
+        #self.crawlinfodb = MongoCrawlInfo(self.jobname)
+        self.crawlinfodb = crawlinfo
         self.scheduler = Scheduler(self.jobname, self.mapper, self.seen,
                                    self.crawlinfodb)
-        self.inq = HashSplitIncomingQueue(job=self.jobname, buffsize=500)
+        self.inq = HashSplitIncomingQueue(
+            qdir=os.path.join(HQ_HOME, 'inq', self.jobname),
+            buffsize=500)
 
         #self.discovered_executor = ThreadPoolExecutor(poolsize=1)
 
@@ -284,9 +296,10 @@ class CrawlJob(object):
         logging.info("shutting down scheduler")
         self.scheduler.shutdown()
         logging.info("closing incoming queues")
+        self.inq.flush()
         self.inq.close()
-        logging.info("dropping MongoDB connection")
-        self.mongo.disconnect()
+        logging.info("shutting down crawlinfo")
+        self.crawlinfodb.shutdown()
         logging.info("done.")
         #self.discovered_executor.shutdown()
 
@@ -338,7 +351,7 @@ class CrawlJob(object):
     def feed(self, client, n):
         curis = self.scheduler.feed(client, n)
         r = [self.makecuri(u) for u in curis]
-        self.mongo.end_request()
+        #self.mongo.end_request()
         return r
 
     def finished(self, curis):
@@ -346,13 +359,15 @@ class CrawlJob(object):
         for curi in curis:
             self.scheduler.finished(curi)
             result['processed'] += 1
-        self.mongo.end_request()
+        #self.mongo.end_request()
         return result
 
     def reset(self, client):
         return self.scheduler.reset(client)
 
     def flush(self):
+        self.inq.flush()
+        self.inq.close()
         return self.scheduler.flush_clients()
 
 class Headquarters(object):
@@ -360,6 +375,9 @@ class Headquarters(object):
     def __init__(self):
         self.jobs = {}
         self.jobslock = threading.RLock()
+        # single shared CrawlInfo database
+        # named 'wide' for historical reasons.
+        self.crawlinfo = MongoCrawlInfo('wide')
 
     def shutdown(self):
         for job in self.jobs.values():
@@ -369,7 +387,7 @@ class Headquarters(object):
         with self.jobslock:
             job = self.jobs.get(jobname)
             if job is None:
-                job = self.jobs[jobname] = CrawlJob(jobname)
+                job = self.jobs[jobname] = CrawlJob(jobname, self.crawlinfo)
             return job
 
         self.schedulers = {}

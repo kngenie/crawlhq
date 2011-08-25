@@ -83,8 +83,8 @@ class FileEnqueue(object):
             return False
         logging.debug('%s close:acquiring lock blocking=%s', id(self), blocking)
         if self.lock.acquire(blocking):
-            logging.debug('%s close:acquired file=%s', id(self), self.file)
             try:
+                logging.debug('%s close:acquired file=%s', id(self), self.file)
                 if self.file: self._close()
                 if rollover:
                     self.closed.set()
@@ -151,7 +151,6 @@ class FileEnqueue(object):
                     self._writeout(flushthis)
                     flushthis = None
         else:
-            #self._writeout(cjson.encode(curi) for curi in curis)
             if self.executor:
                 self.executor.execute(self._writeout, curis)
             else:
@@ -171,15 +170,14 @@ class QueueFileReader(object):
         self.map = None
         self.open()
     def open(self):
-        self.fd = os.open(self.qfile, os.O_RDWR)
-        self.map = mmap.mmap(self.fd, 0, access=mmap.ACCESS_WRITE)
+        fd = os.open(self.qfile, os.O_RDWR)
+        self.map = mmap.mmap(fd, 0, access=mmap.ACCESS_WRITE)
+        # mmap dups fd. fd need not be kept open.
+        os.close(fd)
     def close(self):
         if self.map:
             self.map.close()
             self.map = None
-        if self.fd >= 0:
-            os.close(self.fd)
-            self.fd = -1
     def next(self):
         if self.map is None:
             logging.warn("QueueFileReader:next called on closed file:%s",

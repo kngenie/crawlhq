@@ -15,12 +15,11 @@ QUEUE_DIRECTORY = '/1/incoming/hq'
 class IncomingQueue(object):
     # default maxsize 1GB - this would be too big for multi-queue
     # settings
-    def __init__(self, job, qdirbase=QUEUE_DIRECTORY,
+    def __init__(self, qdir,
                  noupdate=False, opener=None, buffsize=0,
                  maxsize=1000*1000*1000):
-        self.job = job
-        # ensure job directory exists
-        self.qdir = os.path.join(qdirbase, job)
+        # ensure qdir directory exists
+        self.qdir = qdir
         if not os.path.isdir(self.qdir):
             os.makedirs(self.qdir)
 
@@ -53,20 +52,18 @@ class IncomingQueue(object):
     def __del__(self):
         self.close()
 
-    def close(self):
-        # with self.qfilelock:
-        #     if self.qfile:
-        #         qfile = self.qfile
-        #         self.qfile = None
-        #         qfile.close()
+    def close(self, blocking=True):
         for q in self.qfiles:
-            q.close()
+            q.close(blocking=blocking)
+
+    def flush(self):
+        for q in self.qfiles:
+            q._flush()
 
     def shutdown(self):
         self.rqfile.close()
         # _flush should be part of close, but not now.
-        for q in self.qfiles:
-            q._flush()
+        self.flush()
         self.write_executor.shutdown()
         self.close()
 
@@ -97,9 +94,9 @@ class IncomingQueue(object):
     def get(self, timeout=0.0):
         o = self.rqfile.get(timeout)
         # if queue exhausted, try closing current enq
-        # TODO: re-implement this for possibly multi-queue situation
-        # if not o:
-        #     self.qfile.close()
+        # leave busy queues
+        if not o:
+            self.close(blocking=False)
         if o: self.processedcount += 1
         return o
 

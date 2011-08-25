@@ -34,10 +34,13 @@ class WorkSet(object):
         self.finishedcount = 0
         self.activecount = 0
 
-    def shutdown(self):
+    def flush(self):
         # _flush() should be part of close(), but not now
         self.enq._flush()
         self.enq.close()
+        
+    def shutdown(self):
+        self.flush()
         self.deq.close()
 
     def get_status(self):
@@ -388,4 +391,4 @@ class Scheduler(object):
         #for cl in self.clients.values():
         #    cl.flush_scheduled()
         for ws in self.worksets:
-            ws.unload()
+            ws.flush()
