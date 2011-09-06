@@ -6,6 +6,7 @@ $def with(jobs)
 <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.5.1/jquery.js"></script>
 <style type="text/css">
 table { border-collapse:collapse; }
+.job { margin-bottom: 6px; }
 td.n { text-align: right; }
 .loading { color: #666; }
 .wait {
@@ -22,13 +23,12 @@ $for i, j in enumerate(jobs):
   <div class="job" jobname="${j.name}">
     <div class="jtitle">${i+1}: ${j.name}</div>
     <div class="jobdetail">
-      <span>Seen: <span id="seencount">${format(j.seen, 'n')}</span></span>
-      <span>Inq: ${format(j.queue.inqcount, 'n')}</span>
-      <button id="update-jobstat">Update</button>
+      <span>Seen: <span class="seencount"></span></span>
+      <button class="update-jobstat">Update</button>
     </div>
     <div>
       <button>Reset</button>
-      <button>Flush</button>
+      <button class="flush">Flush</button>
       <button>Seed</button>
     </div>
     <h3><a href="#" class="showstatus">Status</a></h3>
@@ -177,25 +177,38 @@ function showstatus(ev) {
 }
 function with_comma(n) {
   var digits = String(n).match(/./g);
-  for (var i = digits.length - 3; i > 1; i -= 3) {
+  for (var i = digits.length - 3; i > 0; i -= 3) {
     digits.splice(i, 0, ',');
   }
   return digits.join('');  
 }
-function render_jobstat(data) {
-  jQuery('#seencount').text(with_comma(data.seencount)).removeClass('loading');
-}
 function update_jobstat() {
   var job = getjobname(this);
-  jQuery('#seencount').addClass('loading');
+  var jobel = jQuery(this).closest('.job');
+  jQuery('.seencount', jobel).addClass('loading');
   jQuery.ajax('status/q/jobstat', {
     data:{job:job},
     dataType:'json',
-    success: render_jobstat
+    success: function(data){
+      jQuery('.seencount', jobel).text(with_comma(data.seencount));
+    },
+    complete: function(){ jQuery('.seencount', jobel).removeClass('loading'); }
+  });
+}
+function flush_job() {
+  var job = getjobname(this);
+  jQuery.ajax('jobs/'+encodeURIComponent(job)+'/flush', {
+    dataType:'json',
+    success:function(data){
+      if (!data.ok) {
+        alert('job ' + job + ' flush failed');
+      }
+    }
   });
 }
 jQuery('.seencheck').submit(seencheck);
 jQuery('.showstatus').click(showstatus);
-jQuery('#update-jobstat').click(update_jobstat);
+jQuery('button.update-jobstat').click(update_jobstat);
+jQuery('button.flush').click(flush_job);
 </script>
 </html>

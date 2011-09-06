@@ -57,12 +57,6 @@ class Status:
                     ' Make sure mongos is running on this host.')
 
         jobs = [storify(j) for j in db.jobconfs.find()]
-        for j in jobs:
-            qc = db.jobs[j.name].find({'co':{'$gte':0}}).count()
-            coqc = 0 # db.jobs[j.name].find({'co':{'$gt':0}}).count()
-            inqc = db.inq[j.name].count()
-            j.seen = db.seen[j.name].count()
-            j.queue = Storage(count=qc, cocount=coqc, inqcount=inqc)
 
         db.connection.end_request()
         
