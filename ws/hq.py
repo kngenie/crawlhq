@@ -24,6 +24,7 @@ from scheduler import Scheduler
 import leveldb
 from executor import *
 import logging
+from mongodomaininfo import DomainInfo
 
 logging.basicConfig(level=logging.WARN)
 
@@ -275,13 +276,14 @@ class HashSplitIncomingQueue(IncomingQueue):
 class CrawlJob(object):
     NWORKSETS_BITS = 8
 
-    def __init__(self, jobname, crawlinfo):
+    def __init__(self, jobname, crawlinfo, domaininfo):
         self.jobname = jobname
         self.mapper = MongoCrawlMapper(self.jobname,
                                        self.NWORKSETS_BITS)
         self.seen = Seen(dbdir=os.path.join(HQ_HOME, 'seen', self.jobname))
         #self.crawlinfodb = MongoCrawlInfo(self.jobname)
         self.crawlinfodb = crawlinfo
+        self.domaininfo = domaininfo
         self.scheduler = Scheduler(self.jobname, self.mapper, self.seen,
                                    self.crawlinfodb)
         self.inq = HashSplitIncomingQueue(
@@ -319,10 +321,16 @@ class CrawlJob(object):
     #def discovered_async(self, curis):
     #    return self.inq.add(curis)
 
+    def get_domaininfo(self, url):
+        uc = urlsplit(url)
+        host = uc.netloc
+        p = host.find(':')
+        if p > 0: host = host[:p]
+        di = self.domaininfo.get(host)
+        return di
+        
     def discovered(self, curis):
         return self.inq.add(curis)
-        #self.discovered_executor.execute(self.discovered_async, curis)
-        #return dict(processed=len(curis))
 
     def processinq(self, maxn):
         '''process incoming queue. maxn paramter adivces
@@ -330,13 +338,17 @@ class CrawlJob(object):
         actual number of URIs processed may exceed it if incoming queue
         stores URIs in chunks.'''
         #return self.inq.process(maxn)
-        result = dict(processed=0, scheduled=0, td=0.0, ts=0.0)
+        result = dict(processed=0, scheduled=0, excluded=0, td=0.0, ts=0.0)
         for count in xrange(maxn):
             t0 = time.time()
             furi = self.inq.get(0.01)
             result['td'] += (time.time() - t0)
             if furi is None: break
             result['processed'] += 1
+            di = self.get_domaininfo(furi['u'])
+            if di and di['exclude']:
+                result['excluded'] += 1
+                continue
             t0 = time.time()
             if self.scheduler.schedule_unseen(furi):
                 result['scheduled'] += 1
@@ -378,16 +390,19 @@ class Headquarters(object):
         # single shared CrawlInfo database
         # named 'wide' for historical reasons.
         self.crawlinfo = MongoCrawlInfo('wide')
+        self.domaininfo = DomainInfo()
 
     def shutdown(self):
         for job in self.jobs.values():
             job.shutdown()
+        self.domaininfo.shutdown()
 
     def get_job(self, jobname):
         with self.jobslock:
             job = self.jobs.get(jobname)
             if job is None:
-                job = self.jobs[jobname] = CrawlJob(jobname, self.crawlinfo)
+                job = self.jobs[jobname] = CrawlJob(jobname, self.crawlinfo,
+                                                    self.domaininfo)
             return job
 
         self.schedulers = {}
@@ -492,10 +507,10 @@ class ClientAPI:
         if 'u' not in p:
             return {error:'u value missing'}
 
-        result = dict(processed=0, scheduled=0)
-        hq.get_job(job).discovered([p])
-        result.update(processed=1)
-        return result
+        #result = dict(processed=0, scheduled=0)
+        return hq.get_job(job).discovered([p])
+        #result.update(processed=1)
+        #return result
 
     def post_mdiscovered(self, job):
         '''receives submission of "discovered" events in batch.
