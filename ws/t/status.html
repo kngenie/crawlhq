@@ -155,7 +155,10 @@ function renderstatus(data, status, xhr) {
           jQuery(r).addClass('client');
           jQuery(r.insertCell(-1)).text(k).attr({align:'right'});
           jQuery.each(['scheduledcount','feedcount','finishedcount','next','worksetcount','lastfeedcount'],
-                 function(i, p){ jQuery(r.insertCell(-1)).text(v[p]).attr({align:'right'}); });
+		function(i, p){
+		    if (v[p] == null) v[p] = '-';
+		    jQuery(r.insertCell(-1)).text(v[p]).attr({align:'right'});
+		});
         });
       d.append(tbl);
     }

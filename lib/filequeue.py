@@ -5,18 +5,21 @@ import time
 import cjson
 import mmap
 import logging
+from cStringIO import StringIO
 
 EMPTY_PAUSE = 15.0
 
 from executor import *
 
 class FileEnqueue(object):
-    def __init__(self, qdir, suffix=None, opener=None,
+    def __init__(self, qdir, suffix=None,
+                 maxsize=1000*1000*1000, # 1GB
+                 opener=None,
                  buffer=0, executor=None):
         self.qdir = qdir
         self.opener = opener
 
-        self.maxsize = 1000*1000*1000 # 1GB
+        self.maxsize = maxsize
         self.suffix = suffix
 
         self.closed = Event()
@@ -33,15 +36,17 @@ class FileEnqueue(object):
 
         self.executor = executor
 
+    WRITE_BUFSIZE = 50000
+
     def _open(self, fn):
         if self.opener: self.opener.opening(self)
         qf = os.path.join(self.qdir, fn)
         try:
-            self.file = open(qf, 'w+')
+            self.file = open(qf, 'a+', self.WRITE_BUFSIZE)
         except IOError as ex:
             if ex.errno == 2:
                 os.makedirs(self.qdir)
-                self.file = open(qf, 'w+')
+                self.file = open(qf, 'a+', self.WRITE_BUFSIZE)
             else:
                 raise
         #if self.opener: self.opener.opened(self)
@@ -108,10 +113,17 @@ class FileEnqueue(object):
             logging.debug('%s _writeout inside lock', id(self))
             if self.file is None:
                 self.open()
+            b = StringIO()
             for s in data:
-                self.file.write(' ')
-                self.file.write(cjson.encode(s))
-                self.file.write('\n')
+                b.write(' ')
+                b.write(cjson.encode(s))
+                b.write('\n')
+            t0 = time.time(); s0 = self.size()
+            data = b.getvalue()
+            self.file.write(data)
+            t = time.time() - t0
+            if t > 0.001:
+                logging.warn('slow write: %dB, %.4fs', len(data), t)
             if self.size() > self.maxsize:
                 self.rollover()
         logging.debug('%s _writeout done', id(self))
@@ -131,14 +143,17 @@ class FileEnqueue(object):
                 self._writeout(flushthis)
 
     def queue(self, curis):
-        if not isinstance(curis, list):
-            curis = [curis]
+        if not isinstance(curis, (list, tuple)):
+            curis = (curis,)
         if self.buffer_size > 0:
             flushthis = None
-            while curis:
+            it = iter(curis)
+            curi = next(it, None)
+            while curi:
                 with self.bufflock:
-                    while curis:
-                        self.buffer.append(curis.pop(0))
+                    while curi:
+                        self.buffer.append(curi)
+                        curi = next(it, None)
                         if len(self.buffer) > self.buffer_size:
                             if self.executor:
                                 self.executor.execute(self._writeout,
@@ -147,6 +162,7 @@ class FileEnqueue(object):
                                 flushthis = self.buffer
                             self.buffer = []
                             break
+                # we should writeout without locking buffer
                 if flushthis:
                     self._writeout(flushthis)
                     flushthis = None
@@ -310,20 +326,19 @@ class FileDequeue(object):
         '''currently this method is not thread-safe'''
         while 1:
             if self.rqfile:
-                try:
-                    curi = self.rqfile.next()
-                    return curi
-                except StopIteration:
-                    self.rqfile.close()
-                    if not self.noupdate:
-                        try:
-                            os.unlink(self.rqfile.qfile)
-                        except:
-                            logging.warn("unlink failed on %s",
-                                         self.rqfile.qfile, exc_info=1)
-                    self.rqfile = None
-                    if not self.next_rqfile(timeout):
-                        return None
+                curi = next(self.rqfile, None)
+                if curi: return curi
+
+                self.rqfile.close()
+                if not self.noupdate:
+                    try:
+                        os.unlink(self.rqfile.qfile)
+                    except:
+                        logging.warn("unlink failed on %s",
+                                     self.rqfile.qfile, exc_info=1)
+                self.rqfile = None
+                if not self.next_rqfile(timeout):
+                    return None
             else:
                 if not self.next_rqfile(timeout):
                     return None

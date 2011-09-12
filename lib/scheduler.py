@@ -24,7 +24,7 @@ class WorkSet(object):
         self.qdir = os.path.join(WorkSet.WORKSET_DIR,
                                  self.job, str(self.wsid))
 
-        self.enq = FileEnqueue(self.qdir)
+        self.enq = FileEnqueue(self.qdir, buffer=500)
         self.deq = FileDequeue(self.qdir)
 
         self.running = True
@@ -199,17 +199,12 @@ class Scheduler(object):
     #NWORKSETS = 256
     #NWORKSETS = 1 << NWORKSETS_BITS
     
-    def __init__(self, job, mapper, seen, crawlinfodb=None):
+    def __init__(self, job, mapper, crawlinfodb=None):
         self.job = job
-        #self.db = crawlinfodb
         self.mapper = mapper
         self.NWORKSETS = self.mapper.nworksets
         self.clients = {}
         self.crawlinfo = crawlinfodb
-        #self.crawlinfo = CrawlInfo(self.db.seen[self.job])
-        self.seen = seen
-        #self.seen = Seen(dbdir='/1/crawling/hq/seen')
-        #self.get_jobconf()
 
         self.worksets = [WorkSet(job, wsid) for wsid in xrange(self.NWORKSETS)]
         #self.load_workset_assignment()
@@ -297,61 +292,6 @@ class Scheduler(object):
         #ws = self.workset(curi)
         ws = self.mapper.workset(curi)
         return self.worksets[ws].schedule(curi)
-
-    def schedule_unseen(self, incuri):
-        '''schedule_unseen to be executed asynchronously'''
-        #print >>sys.stderr, "_schedule_unseen(%s)" % incuri
-        # uk = self.urlkey(incuri['u'])
-        # q = self.keyquery(uk)
-        # expire = incuri.get('e')
-
-        # wsid = self.workset(q['fp'])
-        # if self.worksets[wsid].is_active(incuri['u']):
-        #     return False
-
-        uri = incuri['u']
-        #t0 = time.time()
-        suri = self.seen.already_seen(uri)
-        #print >>sys.stderr, "seen %.3f" % (time.time() - t0,)
-        if suri['e'] < int(time.time()):
-            curi = dict(u=uri, id=suri['_id'],
-                        w=dict(p=incuri.get('p'),
-                               v=incuri.get('v'),
-                               x=incuri.get('x'))
-                        )
-            #t0 = time.time()
-            self.schedule(curi)
-            #print >>sys.stderr, "schedule %.3f" % (time.time() - t0,)
-            return True
-        else:
-            return False
-
-        #print >>sys.stderr, "seen.find_one(%s)" % q
-        #curi = self.seen.find_one(q)
-        #print >>sys.stderr, "seen.find_one:%.3f" % (time.time() - t0,)
-        # if curi is None:
-        #     curi = dict(u=uk, fp=q['fp'])
-        #     if expire is not None:
-        #         curi['e'] = expire
-        #     curi['w'] = dict(p=incuri.get('p'), v=incuri.get('v'),
-        #                      x=incuri.get('x'))
-        #     self.schedule(curi)
-        #     return True
-        # else:
-        #     if 'w' in curi: return False
-        #     if expire is not None:
-        #         curi['e'] = expire
-        #     if curi.get('e', sys.maxint) < time.time():
-        #         curi['w'] = dict(p=incuri.get('p'), v=incuri.get('v'),
-        #                          x=incuri.get('x'))
-        #         self.schedule(curi)
-        #         return True
-        #     return False
-
-    def schedule_unseen_async(self, incuri):
-        '''run schdule_unseen asynchronously'''
-        executor.execute(self.schedule_unseen, incuri)
-        return False
 
     # Scheduler - finished event
 

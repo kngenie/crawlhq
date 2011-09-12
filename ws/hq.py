@@ -15,7 +15,7 @@ from cfpgenerator import FPGenerator
 from urlparse import urlsplit, urlunsplit
 import threading
 import random
-from Queue import Queue, Empty
+from Queue import Queue, Empty, Full, LifoQueue
 import traceback
 import atexit
 from fileinq import IncomingQueue
@@ -159,6 +159,8 @@ class Seen(object):
         self.ready = threading.Event()
         self._open()
         self.ready.set()
+        self.putqueue = Queue(1000)
+        self.drainlock = threading.RLock()
 
     def _open(self):
         logging.info("opening seen-db %s", self.dbdir)
@@ -170,6 +172,8 @@ class Seen(object):
         logging.info("seen-db %s is ready", self.dbdir)
 
     def close(self):
+        logging.info("flushing putqueue (%d)", self.putqueue.qsize())
+        self.drain_putqueue()
         logging.info("closing leveldb...")
         self.seendb.close()
         logging.info("closing leveldb...done")
@@ -188,12 +192,29 @@ class Seen(object):
     def uriquery(uri):
         return Seen.keyquery(Seen.urikey(uri))
 
+    def drain_putqueue(self):
+        # prevent multiple threads from racing on draining - it just
+        # makes performance worse. should not happen often
+        with self.drainlock:
+            try:
+                while 1:
+                    key = self.putqueue.get_nowait()
+                    self.seendb.put(key, '1')
+            except Empty:
+                pass
+
     def already_seen(self, uri):
         self.ready.wait()
         key = Seen.urikey(uri)
         v = self.seendb.get(key)
         if not v:
-            self.seendb.put(key, '1')
+            #self.seendb.put(key, '1')
+            while 1:
+                try:
+                    self.putqueue.put_nowait(key)
+                    break
+                except Full:
+                    self.drain_putqueue()
             return {'_id': key, 'e': 0}
         else:
             return {'_id': key, 'e': self.EXPIRE_NEVER}
@@ -206,6 +227,37 @@ class Seen(object):
             self._open()
         finally:
             self.ready.set()
+
+class PooledIncomingQueue(IncomingQueue):
+    def init_queues(self, n=4, buffsize=0, maxsize=1000*1000*1000):
+        maxsize = maxsize / n
+        self.write_executor = ThreadPoolExecutor(poolsize=2, queuesize=100)
+        self.rqfile = FileDequeue(self.qdir)
+        self.qfiles = [FileEnqueue(self.qdir, suffix=str(i),
+                                   maxsize=maxsize,
+                                   buffer=buffsize,
+                                   executor=self.write_executor)
+                       for i in range(n)]
+        self.avail = LifoQueue()
+        for q in self.qfiles:
+            self.avail.put(q)
+
+    def add(self, curis):
+        processed = 0
+        t0 = time.time()
+        enq = self.avail.get()
+        t = time.time() - t0
+        if t > 1e-3: logging.warn('self.avail.get() %.4f', t)
+        try:
+            enq.queue(curis)
+            self.addedcount += len(curis)
+            processed += len(curis)
+            return dict(processed=processed)
+        finally:
+            t0 = time.time()
+            self.avail.put(enq)
+            t = time.time() - t0
+            if t > 1e-4: logging.warn('slow self.avail.put() %.4f', t)
 
 class OpenQueueQuota(object):
     def __init__(self, maxopens=256):
@@ -236,17 +288,33 @@ class OpenQueueQuota(object):
         logging.debug("closed:released")
             
 class HashSplitIncomingQueue(IncomingQueue):
-    def __init__(self, window_bits=54, maxopens=256, **kwargs):
+    def init_queues(self, window_bits=54, buffsize=0, maxsize=200*1000*1000,
+                    maxopens=256):
         self.opener = OpenQueueQuota(maxopens=maxopens)
         if window_bits < 1 or window_bits > 63:
             raise ValueError, 'window_bits must be 1..63'
         self.window_bits = window_bits
-        # must be set before IncomingQueue.__init__()
+
         self.nwindows = (1 << 64 - self.window_bits)
         self.win_mask = self.nwindows - 1
-        maxsize = 200*1000*1000 / self.nwindows
-        IncomingQueue.__init__(self, opener=self.opener, maxsize=maxsize,
-                               **kwargs)
+                               
+        maxsize = maxsize / self.nwindows
+
+        # dequeue side
+        self.rqfile = FileDequeue(self.qdir)
+
+        # queues for each sub-range
+        self.write_executor = ThreadPoolExecutor(poolsize=2, queuesize=10)
+        self.qfiles = [FileEnqueue(self.qdir, maxsize=maxsize,
+                                   suffix=str(i), opener=opener,
+                                   buffer=buffsize,
+                                   executor=self.write_executor)
+                       for i in range(self.nwindows)]
+
+    def get_status(self):
+        s = IncomingQueue.get_status()
+        s.update(writequeue=self.write_executor.work_queue.qsize())
+        return s
 
     @property
     def maxopens(self):
@@ -265,13 +333,20 @@ class HashSplitIncomingQueue(IncomingQueue):
             curi['id'] = h
             return h
 
-    def num_queues(self):
-        return self.nwindows
-
     def queue_dispatch(self, curi):
         h = self.hash(curi)
         win = (h >> self.window_bits) & self.win_mask
         return win
+
+    def add(self, curis):
+        processed = 0
+        for curi in curis:
+            win = self.queue_dispatch(curi)
+            enq = self.qfiles[win]
+            enq.queue(curi)
+            self.addedcount += 1
+            processed += 1
+        return dict(processed=processed)
 
 class CrawlJob(object):
     NWORKSETS_BITS = 8
@@ -284,9 +359,12 @@ class CrawlJob(object):
         #self.crawlinfodb = MongoCrawlInfo(self.jobname)
         self.crawlinfodb = crawlinfo
         self.domaininfo = domaininfo
-        self.scheduler = Scheduler(self.jobname, self.mapper, self.seen,
+        self.scheduler = Scheduler(self.jobname, self.mapper,
                                    self.crawlinfodb)
-        self.inq = HashSplitIncomingQueue(
+        # self.inq = HashSplitIncomingQueue(
+        #     qdir=os.path.join(HQ_HOME, 'inq', self.jobname),
+        #     buffsize=500)
+        self.inq = PooledIncomingQueue(
             qdir=os.path.join(HQ_HOME, 'inq', self.jobname),
             buffsize=500)
 
@@ -331,13 +409,12 @@ class CrawlJob(object):
         
     def discovered(self, curis):
         return self.inq.add(curis)
-
+        
     def processinq(self, maxn):
         '''process incoming queue. maxn paramter adivces
         upper limit on number of URIs processed in this single call.
         actual number of URIs processed may exceed it if incoming queue
         stores URIs in chunks.'''
-        #return self.inq.process(maxn)
         result = dict(processed=0, scheduled=0, excluded=0, td=0.0, ts=0.0)
         for count in xrange(maxn):
             t0 = time.time()
@@ -350,7 +427,16 @@ class CrawlJob(object):
                 result['excluded'] += 1
                 continue
             t0 = time.time()
-            if self.scheduler.schedule_unseen(furi):
+            u = furi['u']
+            suri = self.seen.already_seen(u)
+            if suri['e'] < int(time.time()):
+                w = dict()
+                for k in ('p','v','x'):
+                    m = furi.get(k)
+                    if m is not None:
+                        w[k] = m
+                curi = dict(u=u, id=suri['_id'], w=w)
+                self.scheduler.schedule(curi)
                 result['scheduled'] += 1
             result['ts'] += (time.time() - t0)
         # currently no access to MongoDB
@@ -528,13 +614,20 @@ class ClientAPI:
         if not isinstance(curis, list):
             result['error'] = 'invalid data - not an array'
             return result
+        if len(curis) == 0:
+            return result
 
+        cj = hq.get_job(job)
         start = time.time()
 
-        result.update(hq.get_job(job).discovered(curis))
+        result.update(cj.discovered(curis))
 
-        result.update(t=(time.time() - start))
-        logging.debug("mdiscovered %s", result)
+        t = time.time() - start
+        result.update(t=t)
+        if t / len(curis) > 1e-3:
+            logging.warn("slow discovered: %.3fs for %d", t, len(curis))
+        else:
+            logging.debug("mdiscovered %s", result)
         return result
             
     def do_processinq(self, job):

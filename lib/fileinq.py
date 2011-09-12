@@ -10,14 +10,10 @@ from filequeue import FileEnqueue, FileDequeue
 import logging
 from executor import ThreadPoolExecutor
 
-QUEUE_DIRECTORY = '/1/incoming/hq'
-
 class IncomingQueue(object):
     # default maxsize 1GB - this would be too big for multi-queue
     # settings
-    def __init__(self, qdir,
-                 noupdate=False, opener=None, buffsize=0,
-                 maxsize=1000*1000*1000):
+    def __init__(self, qdir, noupdate=False,**kw):
         # ensure qdir directory exists
         self.qdir = qdir
         if not os.path.isdir(self.qdir):
@@ -26,27 +22,22 @@ class IncomingQueue(object):
         self.addedcount = 0
         self.processedcount = 0
 
-        self.maxsize = maxsize
+        self.init_queues(**kw)
 
+    def init_queues(self, buffsize=0, maxsize=1000*1000*1000):
+    
         # dequeue side
         self.rqfile = FileDequeue(self.qdir)
-
-        # multiple queue files
-        # TODO: current code does not take advantage of having multiple
-        # files to write into. it would take asynchronous writing.
-        self.write_executor = ThreadPoolExecutor(poolsize=2, queuesize=10)
-        self.qfiles = [FileEnqueue(self.qdir,
-                                   suffix=str(i), opener=opener,
-                                   buffer=buffsize,
-                                   executor=self.write_executor)
-                       for i in range(self.num_queues())]
+        # single queue file, no asynchronous writes
+        self.qfiles = [FileEnqueue(self.qdir, buffer=buffsize,
+                                   maxsize=maxsize)]
 
     @property
     def buffsize(self):
         self.qfiles[0].buffer_size
     @buffsize.setter
     def buffsize(self, v):
-        for enq in self.qfils:
+        for enq in self.qfiles:
             enq.buffer_size = v
 
     def __del__(self):
@@ -71,20 +62,12 @@ class IncomingQueue(object):
         return dict(addedcount=self.addedcount,
                     processedcount=self.processedcount,
                     queuefilecount=self.rqfile.qfile_count(),
-                    writequeue=self.write_executor.work_queue.qsize()
                     )
-
-    # override these two methods when writing into multiple queues
-    def num_queues(self):
-        return 1
-    def queue_dispatch(self, curi):
-        return 0
 
     def add(self, curis):
         result = dict(processed=0)
         for curi in curis:
-            win = self.queue_dispatch(curi)
-            enq = self.qfiles[win]
+            enq = self.qfiles[0]
             enq.queue(curi)
 
             self.addedcount += 1
