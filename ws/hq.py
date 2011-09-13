@@ -657,8 +657,12 @@ class ClientAPI:
         # return an JSON array of objects with properties:
         # uri, path, via, context and data
         r = hq.get_job(job).feed((name, nodes), count)
-        logging.debug("feed %s/%s %s in %.4fs",
-                      name, nodes, len(r), time.time() - start)
+        t = time.time() - start
+        if t > 0.01:
+            logging.warn("slow feed %s %s, %.4fs", name, len(r), t)
+        else:
+            logging.debug("feed %s %s, %.4fs", name, len(r), t)
+
         web.header('content-type', 'text/json')
         return self.jsonres(r)
 
