@@ -79,8 +79,7 @@ function seencheck(ev) {
       //console.log(data);
       var u = data.d;
       if (u == null) {
-        var b = document.createElement('button');
-        jQuery(b).html('Schedule').click(schedule);
+        var b = jQuery('<button>').html('Schedule').click(schedule);
         jQuery('#seencheckresult_'+job).text('not seen ').append(b);
       } else {
         var tbl = document.createElement('table');
@@ -113,14 +112,15 @@ function renderstatus(data, status, xhr) {
   //console.log(data);
   var d = jQuery('.jobstatus', '.job[jobname="'+data.job+'"]');
   d.empty();
-  d.append(jQuery(document.createElement('div'))
-      .append('WorkQueueSize: ', data.workqueuesize));
+  if ('workqueuesize' in data) {
+    jQuery('<div>').text('WorkQueueSize: ' + data.workqueuesize).appendTo(d);
+  }
   var inq = data.inq;
   if (inq) {
-    var inqdiv = jQuery(document.createElement('div'));
-    var in_text = 'in=' + inq.addedcount;
-    var out_text = 'out=' + inq.processedcount;
-    var nq_text = 'nqfiles=' + inq.queuefilecount;
+    var inqdiv = jQuery('<div>');
+    var in_text = 'in=' + with_comma(inq.addedcount);
+    var out_text = 'out=' + with_comma(inq.processedcount);
+    var nq_text = 'nqfiles=' + with_comma(inq.queuefilecount);
     var now = (new Date()).getTime();
     var elapsed_ms = now - last_status_update;
     if (elapsed_ms < 3600000) {
@@ -144,9 +144,8 @@ function renderstatus(data, status, xhr) {
   if (sch) {
     var clients = sch.clients;
     if (clients) {
-      d.append(jQuery(document.createElement('div')).html('clients:'));
-      var tbl = jQuery(document.createElement('table')).attr('border','1')
-        .addClass('Clients');
+      d.append(jQuery('<div>').html('Clients:'));
+      var tbl = jQuery('<table border="1">');
       var r = tbl.get(0).insertRow(-1);
       jQuery.each(['id','scheduled','fed','finished','next','worksets','lastfed'],
              function(i, s){ jQuery(r.insertCell(-1)).text(s); });
@@ -156,7 +155,10 @@ function renderstatus(data, status, xhr) {
           jQuery(r.insertCell(-1)).text(k).attr({align:'right'});
           jQuery.each(['scheduledcount','feedcount','finishedcount','next','worksetcount','lastfeedcount'],
 		function(i, p){
-		    if (v[p] == null) v[p] = '-';
+		    if (v[p] == null)
+		        v[p] = '-';
+		    else if (p.match('count$$'))
+			v[p] = with_comma(v[p]);
 		    jQuery(r.insertCell(-1)).text(v[p]).attr({align:'right'});
 		});
         });
@@ -199,14 +201,17 @@ function update_jobstat() {
   });
 }
 function flush_job() {
+  var btn = this;
   var job = getjobname(this);
   jQuery.ajax('jobs/'+encodeURIComponent(job)+'/flush', {
     dataType:'json',
+    beforeSend:function(){jQuery(btn).addClass('wait');},
     success:function(data){
       if (!data.ok) {
         alert('job ' + job + ' flush failed');
       }
-    }
+    },
+    complete:function(){jQuery(btn).removeClass('wait');}
   });
 }
 jQuery('.seencheck').submit(seencheck);

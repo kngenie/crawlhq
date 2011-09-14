@@ -11,6 +11,19 @@ EMPTY_PAUSE = 15.0
 
 from executor import *
 
+class timelog(object):
+    def __init__(self, msg, warn=1.0):
+        self.msg = msg
+        self.warn = warn
+    def __enter__(self):
+        self.t0 = time.time()
+    def __exit__(self, t, v, tb):
+        t = time.time() - self.t0
+        if t > self.warn:
+            logging.warn('SLOW %s %.4fs', self.msg, t)
+        else:
+            logging.debug('%s %.4fs', self.msg, t)
+
 class FileEnqueue(object):
     def __init__(self, qdir, suffix=None,
                  maxsize=1000*1000*1000, # 1GB
@@ -122,8 +135,8 @@ class FileEnqueue(object):
             data = b.getvalue()
             self.file.write(data)
             t = time.time() - t0
-            if t > 0.001:
-                logging.warn('slow write: %dB, %.4fs', len(data), t)
+            if t > 0.0 and len(data)/t < 1000000: # 1MB/s
+                logging.warn('SLOW write: %dB, %.4fs', len(data), t)
             if self.size() > self.maxsize:
                 self.rollover()
         logging.debug('%s _writeout done', id(self))
@@ -296,18 +309,19 @@ class FileDequeue(object):
                 f = self.rqfiles.pop(0)
                 qpath = os.path.join(self.qdir, f)
                 logging.debug("opening %s", qpath)
-                try:
-                    self.rqfile = QueueFileReader(
-                        qpath,
-                        noupdate = self.noupdate
-                        )
-                except mmap.error as ex:
-                    if ex.errno == 22:
-                        # empty file
-                        os.remove(qpath)
-                        continue
-                    else:
-                        raise
+                with timelog('open %s' % qpath, warn=0.001):
+                    try:
+                        self.rqfile = QueueFileReader(
+                            qpath,
+                            noupdate = self.noupdate
+                            )
+                    except mmap.error as ex:
+                        if ex.errno == 22:
+                            # empty file
+                            os.remove(qpath)
+                            continue
+                        else:
+                            raise
                 self.qfile_read += 1
                 return self.rqfile
             else:
@@ -318,7 +332,8 @@ class FileDequeue(object):
                         pause = remaining_timeout
                     remaining_timeout -= pause
                 if pause > 0.0: time.sleep(pause)
-                self.scan()
+                with timelog('scan'):
+                    self.scan()
                 pause = EMPTY_PAUSE
                 continue
                 
@@ -331,11 +346,12 @@ class FileDequeue(object):
 
                 self.rqfile.close()
                 if not self.noupdate:
-                    try:
-                        os.unlink(self.rqfile.qfile)
-                    except:
-                        logging.warn("unlink failed on %s",
-                                     self.rqfile.qfile, exc_info=1)
+                    with timelog('unlink %s' % self.rqfile.qfile, warn=0.001):
+                        try:
+                            os.unlink(self.rqfile.qfile)
+                        except:
+                            logging.warn("unlink failed on %s",
+                                         self.rqfile.qfile, exc_info=1)
                 self.rqfile = None
                 if not self.next_rqfile(timeout):
                     return None

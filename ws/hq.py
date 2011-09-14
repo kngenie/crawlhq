@@ -447,6 +447,7 @@ class CrawlJob(object):
         return o
 
     def feed(self, client, n):
+        logging.warn('feed %s begin', client)
         curis = self.scheduler.feed(client, n)
         r = [self.makecuri(u) for u in curis]
         #self.mongo.end_request()
@@ -508,9 +509,9 @@ class Headquarters(object):
     def loglevel(self, level):
         logging.getLogger().setLevel(level)
 
-executor = ThreadPoolExecutor(poolsize=4)
+#executor = ThreadPoolExecutor(poolsize=4)
 hq = Headquarters()
-atexit.register(executor.shutdown)
+#atexit.register(executor.shutdown)
 atexit.register(hq.shutdown)
 
 def parse_bool(s):
@@ -604,6 +605,7 @@ class ClientAPI:
         to minimize response time. entries in the incoming queue
         will be processed by separate processinq call.'''
         result = dict(processed=0)
+        data = None
         try:
             data = web.data()
             curis = json.loads(data)
@@ -698,8 +700,8 @@ class ClientAPI:
 
     def do_status(self, job):
         r = hq.get_job(job).get_status()
-        if executor:
-            r['workqueuesize'] = executor.work_queue.qsize()
+        # if executor:
+        #     r['workqueuesize'] = executor.work_queue.qsize()
         return r
 
     def do_worksetstatus(self, job):

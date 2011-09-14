@@ -170,7 +170,12 @@ class ClientQueue(object):
             excount = len(self.worksets)
             while len(r) < n and excount > 0:
                 if self.next >= len(self.worksets): self.next = 0
+                t0 = time.time()
                 curis = self.worksets[self.next].checkout(checkout_per_ws)
+                t = time.time() - t0
+                if t > 0.01:
+                    logging.warn('SLOW WorkSet.checkout #%s %d, %.4fs',
+                                 self.worksets[self.next].wsid, len(curis), t)
                 self.next += 1
                 if curis:
                     excount = len(self.worksets)
@@ -181,6 +186,7 @@ class ClientQueue(object):
             # wait a while - if we don't, client may call again too soon,
             # keeping HQ too busy responding to feed request to fill the
             # queue.
+            logging.warn('feed sleeping 0.5 [%s]', a)
             time.sleep(0.5)
             
         #with self.colock:
