@@ -60,7 +60,7 @@ class WorkSet(object):
             return []
         r = []
         while len(r) < n:
-            curi = self.deq.get(timeout=0.01)
+            curi = self.deq.get(timeout=0.001)
             if curi is None:
                 self.enq.close()
                 break
@@ -109,15 +109,18 @@ class ClientQueue(object):
         scheduledcount = 0
         activecount = 0
         finishedcount = 0
+        nqfiles = 0
         for ws in self.worksets:
             worksets.append(ws.wsid)
             scheduledcount += ws.scheduledcount
             activecount += ws.activecount
             finishedcount += ws.finishedcount
+            nqfiles += ws.deq.qfile_count()
         r['worksets'] = worksets
         r['scheduledcount'] = scheduledcount
         r['activecount'] = activecount
         r['finishedcount'] = finishedcount
+        r['qfilecount'] = nqfiles
         return r
         
     #def is_active(self, url):
@@ -186,7 +189,7 @@ class ClientQueue(object):
             # wait a while - if we don't, client may call again too soon,
             # keeping HQ too busy responding to feed request to fill the
             # queue.
-            logging.warn('feed sleeping 0.5 [%s]', a)
+            logging.debug('feed sleeping 0.5 [%s]', a)
             time.sleep(0.5)
             
         #with self.colock:

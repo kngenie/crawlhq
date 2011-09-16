@@ -23,8 +23,8 @@ $for i, j in enumerate(jobs):
   <div class="job" jobname="${j.name}">
     <div class="jtitle">${i+1}: ${j.name}</div>
     <div class="jobdetail">
-      <span>Seen: <span class="seencount"></span></span>
-      <button class="update-jobstat">Update</button>
+      <span>Seen: <span class="seencount">-</span></span>
+      <button class="update-seencount">Update</button>
     </div>
     <div>
       <button>Reset</button>
@@ -46,15 +46,16 @@ $# % endfor
 </div>
 </body>
 <script type="text/javascript">
-function schedule() {
-  var url = jQuery('[name="url"]', this).val();
+function schedule(ev) {
+  var url = this.u;
   if (url) {
-    var job = getjobname(this);
-    this.disabled = true;
-    var b = this;
+    var b = ev.target;
+    var job = getjobname(b);
+    if (!job) { alert('failed to identify job'); return; }
+    b.disabled = true;
     jQuery.ajax('jobs/'+job+'/discovered', {
       type:'POST',
-      data:{u:url},
+      data:{u:url, force:1},
       dataType:'json',
       success:function(data, status, xhr) {
         jQuery('#seencheckresult_'+job).html(data.scheduled ? 'scheduled'
@@ -72,34 +73,37 @@ function seencheck(ev) {
     url = 'http://' + url;
   //console.log(url);
   jQuery('#seencheckresult_'+job).empty();
-  jQuery.ajax('status/q/seen', {
-    data:{u:url, j:job},
+  jQuery.ajax('jobs/'+encodeURIComponent(job)+'/seen', {
+    data:{u:url},
     dataType:'json',
     success:function(data, status, xhr) {
       //console.log(data);
-      var u = data.d;
-      if (u == null) {
-        var b = jQuery('<button>').html('Schedule').click(schedule);
-        jQuery('#seencheckresult_'+job).text('not seen ').append(b);
-      } else {
-        var tbl = document.createElement('table');
-        tbl.border = '1';
+      var tbl = [];
+      var seen = 0;
+      var u = data.u;
+      if (u) {
+        if (u.id) { tbl.push(['ID', u.id]); }
         if (u.f) {
-          var tr = tbl.insertRow(-1);
-          tr.insertCell(-1).innerHTML = 'Cralwed on';
-          tr.insertCell(-1).innerHTML = new Date(u.f*1000);
+          tbl.push(['Crawled on', new Date(u.f*1000).toString()]);
+          seen = 1;
         }
         if (u.e) {
-          var tr = tbl.insertRow(-1);
-          tr.insertCell(-1).innerHTML = 'Expires on';
-          tr.insertCell(-1).innerHTML = new Date(u.e*1000);
+          tbl.push(['Expires on', new Date(u.e*1000).toString()]);
+          seen = 1;
         }
-        if ('fp' in u) {
-          var tr = tbl.insertRow(-1);
-          tr.insertCell(-1).innerHTML = 'fp';
-          tr.insertCell(-1).innerHTML = u.fp;
-        }
-        jQuery('#seencheckresult_'+job).empty().append(tbl);
+      }
+      var e = jQuery('#seencheckresult_'+job).empty();
+      e.append(seen ? 'seen' : 'not seen');
+      jQuery('<button>Schedule</button>')
+        .click(jQuery.proxy(schedule, {u:url})).appendTo(e);
+      if (tbl.length > 0) {
+        var t = jQuery('<table border="1">').get(0);
+        jQuery.each(tbl, function(i, r){
+            jQuery('<tr>').append(
+              jQuery('<td>').append(r[0]), jQuery('<td>').append(r[1]))
+	      .appendTo(t);
+	  });
+	e.append(t);
       }
     }
   });
@@ -147,13 +151,14 @@ function renderstatus(data, status, xhr) {
       d.append(jQuery('<div>').html('Clients:'));
       var tbl = jQuery('<table border="1">');
       var r = tbl.get(0).insertRow(-1);
-      jQuery.each(['id','scheduled','fed','finished','next','worksets','lastfed'],
+      jQuery.each(['id','scheduled','fed','finished','next','worksets',
+		   'lastfed','nqfiles'],
              function(i, s){ jQuery(r.insertCell(-1)).text(s); });
       jQuery.each(clients, function(k, v){
           r = tbl.get(0).insertRow(-1);
           jQuery(r).addClass('client');
           jQuery(r.insertCell(-1)).text(k).attr({align:'right'});
-          jQuery.each(['scheduledcount','feedcount','finishedcount','next','worksetcount','lastfeedcount'],
+          jQuery.each(['scheduledcount','feedcount','finishedcount','next','worksetcount','lastfeedcount','qfilecount'],
 		function(i, p){
 		    if (v[p] == null)
 		        v[p] = '-';
@@ -187,17 +192,16 @@ function with_comma(n) {
   }
   return digits.join('');  
 }
-function update_jobstat() {
+function update_seencount() {
   var job = getjobname(this);
   var jobel = jQuery(this).closest('.job');
-  jQuery('.seencount', jobel).addClass('loading');
-  jQuery.ajax('status/q/jobstat', {
-    data:{job:job},
+  jQuery('.seencount', jobel).addClass('loading wait');
+  jQuery.ajax('jobs/'+encodeURIComponent(job)+'/seencount', {
     dataType:'json',
     success: function(data){
       jQuery('.seencount', jobel).text(with_comma(data.seencount));
     },
-    complete: function(){ jQuery('.seencount', jobel).removeClass('loading'); }
+    complete: function(){ jQuery('.seencount', jobel).removeClass('loading wait'); }
   });
 }
 function flush_job() {
@@ -216,7 +220,7 @@ function flush_job() {
 }
 jQuery('.seencheck').submit(seencheck);
 jQuery('.showstatus').click(showstatus);
-jQuery('button.update-jobstat').click(update_jobstat);
+jQuery('button.update-seencount').click(update_seencount);
 jQuery('button.flush').click(flush_job);
 </script>
 </html>

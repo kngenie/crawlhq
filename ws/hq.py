@@ -51,36 +51,50 @@ _fp31 = FPGenerator(0xBA75BB4300000000, 31)
 # _fp63 = FPGenerator(0xE1F8D6B3195D6D97, 63)
 # _fp64 = FPGenerator(0xD74307D3FD3382DB, 64)
 
-class MongoCrawlMapper(object):
-    '''maps client queue id to set of WorkSets'''
-    def __init__(self, job, nworksets_bits):
-        self.job = job
+class MongoJobConfigs(object):
+    def __init__(self):
         self.mongo = pymongo.Connection()
         self.db = self.mongo.crawl
+
+    def get_jobconf(self, job, pname, default=None, nocreate=0):
+        jobconf = self.db.jobconfs.find_one({'name':job}, {pname: 1})
+        if jobconf is None and not nocreate:
+            jobconf = {'name':self.job}
+            self.db.jobconfs.save(jobconf)
+        return jobconf.get(pname, default)
+
+    def save_jobconf(self, job, pname, value, nocreate=0):
+        if nocreate:
+            self.db.jobconfs.update({'name': job}, {pname: value},
+                                    multi=False, upsert=False)
+        else:
+            self.db.jobconfs.update({'name': job}, {pname: value},
+                                    multi=False, upsert=True)
+
+    def job_exists(self, job):
+        o = self.db.jobconfs.find_one({'name':job}, {'name':1})
+        return o is not None
+
+class CrawlMapper(object):
+    '''maps client queue id to set of WorkSets'''
+    def __init__(self, jobconfigs, job, nworksets_bits):
+        self.jobconfigs = jobconfigs
+        self.job = job
         self.nworksets_bits = nworksets_bits
         self.nworksets = (1 << self.nworksets_bits)
-        self.get_jobconf()
         self.load_workset_assignment()
 
-    def get_jobconf(self):
-        self.jobconf = self.db.jobconfs.find_one({'name':self.job})
-        if self.jobconf is None:
-            self.jobconf = {'name':self.job}
-            self.db.jobconfs.save(self.jobconf)
-
     def create_default_workset_assignment(self):
-        num_nodes = self.jobconf.get('nodes', 20)
+        num_nodes = self.jobconfigs.get_jobconf(self.job, 'nodes', 20)
         return list(itertools.islice(
                 itertools.cycle(xrange(num_nodes)),
                 0, self.nworksets))
         
     def load_workset_assignment(self):
-        r = self.db.jobconfs.find_one({'name':self.job}, {'wscl':1})
-        wscl = self.jobconf.get('wscl')
+        wscl = self.jobconfigs.get_jobconf(self.job, 'wscl')
         if wscl is None:
             wscl = self.create_default_workset_assignment()
-            self.jobconf['wscl'] = wscl
-            self.db.jobconfs.save(self.jobconf)
+            self.jobconfigs.save_jobconf(self.job, 'wscl', wscl)
         if len(wscl) > self.nworksets:
             wscl[self.nworksets:] = ()
         elif len(wscl) < self.nworksets:
@@ -179,6 +193,17 @@ class Seen(object):
         logging.info("closing leveldb...done")
         self.seendb = None
 
+    def _count(self):
+        self.ready.wait()
+        it = self.seendb.new_iterator()
+        if not it: return 0
+        it.seek_to_first()
+        c = 0
+        while it.valid():
+            c += 1
+            it.next()
+        return c
+
     @staticmethod
     def urikey(uri):
         uhash = Seen._fp64.sfp(uri)
@@ -224,6 +249,22 @@ class Seen(object):
         try:
             self.close()
             leveldb.IntHash.repair_db(self.dbdir)
+            self._open()
+        finally:
+            self.ready.set()
+
+    def clear(self):
+        self.ready.clear()
+        try:
+            self.close()
+            logging.info('deleting files in %s', self.dbdir)
+            for f in os.listdir(self.dbdir):
+                p = os.path.join(self.dbdir, f)
+                try:
+                    os.remove(p)
+                except:
+                    logging.warn('os.remove failed on %s', p, exc_info=1)
+            logging.info('done deleting files, re-creating %s', self.dbdir)
             self._open()
         finally:
             self.ready.set()
@@ -351,10 +392,11 @@ class HashSplitIncomingQueue(IncomingQueue):
 class CrawlJob(object):
     NWORKSETS_BITS = 8
 
-    def __init__(self, jobname, crawlinfo, domaininfo):
+    def __init__(self, jobconfigs, jobname, crawlinfo, domaininfo):
+        self.jobconfigs = jobconfigs
         self.jobname = jobname
-        self.mapper = MongoCrawlMapper(self.jobname,
-                                       self.NWORKSETS_BITS)
+        self.mapper = CrawlMapper(self.jobconfigs, self.jobname,
+                                  self.NWORKSETS_BITS)
         self.seen = Seen(dbdir=os.path.join(HQ_HOME, 'seen', self.jobname))
         #self.crawlinfodb = MongoCrawlInfo(self.jobname)
         self.crawlinfodb = crawlinfo
@@ -407,6 +449,15 @@ class CrawlJob(object):
         di = self.domaininfo.get(host)
         return di
         
+    def schedule(self, curis):
+        '''schedule curis bypassing seen-check. typically used for starting
+           new crawl cycle.'''
+        scheduled = 0
+        for curi in curis:
+            self.scheduler.schedule(curi)
+            scheduled += 1
+        return dict(processed=scheduled, scheduled=scheduled)
+
     def discovered(self, curis):
         return self.inq.add(curis)
         
@@ -478,18 +529,21 @@ class Headquarters(object):
         # named 'wide' for historical reasons.
         self.crawlinfo = MongoCrawlInfo('wide')
         self.domaininfo = DomainInfo()
+        self.jobconfigs = MongoJobConfigs()
 
     def shutdown(self):
         for job in self.jobs.values():
             job.shutdown()
         self.domaininfo.shutdown()
 
-    def get_job(self, jobname):
+    def get_job(self, jobname, nocreate=False):
         with self.jobslock:
             job = self.jobs.get(jobname)
             if job is None:
-                job = self.jobs[jobname] = CrawlJob(jobname, self.crawlinfo,
-                                                    self.domaininfo)
+                if nocreate and not self.jobconfigs.job_exists(jobname):
+                    raise ValueError('unknown job %s' % jobname)
+                job = self.jobs[jobname] = CrawlJob(
+                    self.jobconfigs, jobname, self.crawlinfo, self.domaininfo)
             return job
 
         self.schedulers = {}
@@ -590,14 +644,19 @@ class ClientAPI:
         for crawling with last-modified and content-hash obtained
         from seen database (if previously crawled)'''
         
-        p = web.input(p='', v=None, x=None)
+        p = web.input(force=0)
         if 'u' not in p:
             return {error:'u value missing'}
 
-        #result = dict(processed=0, scheduled=0)
-        return hq.get_job(job).discovered([p])
-        #result.update(processed=1)
-        #return result
+        furi = dict(u=p.u)
+        for k in ('p', 'v', 'x'):
+            if k in p and p[k] is not None: furi[k] = p[k]
+
+        cj = hq.get_job(job)
+        if p.force:
+            return cj.schedule([furi])
+        else:
+            return cj.discovered([furi])
 
     def post_mdiscovered(self, job):
         '''receives submission of "discovered" events in batch.
@@ -613,7 +672,12 @@ class ClientAPI:
             web.debug("json.loads error:data=%s" % data)
             result['error'] = 'invalid data - json parse failed'
             return result
-        if not isinstance(curis, list):
+        if isinstance(curis, dict):
+            force = curis.get('f')
+            curis = curis['u']
+        elif isinstance(curis, list):
+            force = False
+        else:
             result['error'] = 'invalid data - not an array'
             return result
         if len(curis) == 0:
@@ -622,7 +686,10 @@ class ClientAPI:
         cj = hq.get_job(job)
         start = time.time()
 
-        result.update(cj.discovered(curis))
+        if force:
+            result.update(cj.schedule(curis))
+        else:
+            result.update(cj.discovered(curis))
 
         t = time.time() - start
         result.update(t=t)
@@ -638,7 +705,7 @@ class ClientAPI:
         number if incoming queue is storing URIs in chunks'''
         p = web.input(max=5000)
         maxn = int(p.max)
-        result = dict(inq=0, processed=0, scheduled=0, max=maxn,
+        result = dict(job=job, inq=0, processed=0, scheduled=0, max=maxn,
                       td=0.0, ts=0.0)
         start = time.time()
 
@@ -691,11 +758,10 @@ class ClientAPI:
 
     def do_seen(self, job):
         p = web.input()
-        u = hq.get_job(job).seen(p.u)
+        u = hq.get_job(job).seen.already_seen(p.u)
         if u:
-            del u['_id']
+            u['id'] = u.pop('_id', None)
         result = dict(u=u)
-        #hq.mongo.end_request()
         return result
 
     def do_status(self, job):
@@ -707,6 +773,14 @@ class ClientAPI:
     def do_worksetstatus(self, job):
         r = hq.get_job(job).get_workset_status()
         return r
+
+    def do_seencount(self, job):
+        '''can take pretty long time'''
+        try:
+            count = hq.get_job(job, nocreate=1).seen._count()
+            return dict(success=1, seencount=count)
+        except Exception as ex:
+            return dict(success=0, err=str(ex))
 
     def do_test(self, job):
         web.debug(web.data())
