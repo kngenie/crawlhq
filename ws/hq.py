@@ -782,6 +782,13 @@ class ClientAPI:
         except Exception as ex:
             return dict(success=0, err=str(ex))
 
+    def do_clearseen(self, job):
+        try:
+            hq.get_job(job, nocreate=1).seen.clear()
+            return dict(success=1)
+        except Exception as ex:
+            return dict(success=0, err=str(ex))
+
     def do_test(self, job):
         web.debug(web.data())
         return str(web.ctx.env)
