@@ -203,6 +203,7 @@ class QueueFileReader(object):
         self.map = mmap.mmap(fd, 0, access=mmap.ACCESS_WRITE)
         # mmap dups fd. fd need not be kept open.
         os.close(fd)
+        self.pos = 0
     def close(self):
         if self.map:
             self.map.close()
@@ -212,31 +213,34 @@ class QueueFileReader(object):
             logging.warn("QueueFileReader:next called on closed file:%s",
                          self.qfile)
             raise StopIteration
-        while 1:
-            mark = self.map.read(1)
-            if not mark: break
-            if mark == ' ':
-                markpos = self.map.tell() - 1
-                l = self.map.readline()
+        while self.pos < self.map.size():
+            el = self.map.find('\n', self.pos + 1)
+            if el < 0: el = self.map.size()
+            if self.map[self.pos] == ' ':
+                l = self.map[self.pos + 1:el]
                 if not self.noupdate:
-                    self.map[markpos] = '#'
+                    self.map[self.pos] = '#'
                 try:
                     return cjson.decode(l)
                 except Exception as ex:
                     logging.warn('malformed line in %s at %d: %s', self.qfile,
-                                 markpos, l)
+                                 self.pos, l)
                     continue
-            self.map.readline()
+            self.pos = el + 1
         raise StopIteration
 
 class FileDequeue(object):
     '''multi-queue file reader'''
-    def __init__(self, qdir, noupdate=False, norecover=False):
+    def __init__(self, qdir, noupdate=False, norecover=False,
+                 reader=QueueFileReader):
+        '''reader should be a factory function for QueueFileReader-compatible
+           object.'''
         self.qdir = qdir
         # timestamp of the last qfile
         self.rqfile = None
         self.rqfiles = []
         self.noupdate = noupdate
+        self.reader = reader
 
         self.qfile_read = 0
         if not norecover:
@@ -309,11 +313,11 @@ class FileDequeue(object):
                 f = self.rqfiles.pop(0)
                 qpath = os.path.join(self.qdir, f)
                 logging.debug("opening %s", qpath)
-                with timelog('open %s' % qpath, warn=0.001):
+                with timelog('open %s' % qpath, warn=2.0):
                     try:
-                        self.rqfile = QueueFileReader(
+                        self.rqfile = self.reader(
                             qpath,
-                            noupdate = self.noupdate
+                            noupdate=self.noupdate
                             )
                     except mmap.error as ex:
                         if ex.errno == 22:

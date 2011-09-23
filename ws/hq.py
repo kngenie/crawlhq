@@ -20,6 +20,7 @@ import traceback
 import atexit
 from fileinq import IncomingQueue
 from filequeue import FileEnqueue, FileDequeue
+import sortdequeue
 from scheduler import Scheduler
 import leveldb
 from executor import *
@@ -269,11 +270,15 @@ class Seen(object):
         finally:
             self.ready.set()
 
+class FPSortingQueueFileReader(sortdequeue.SortingQueueFileReader):
+    def urikey(self, o):
+        Seen.urikey(o['u'])
+
 class PooledIncomingQueue(IncomingQueue):
-    def init_queues(self, n=4, buffsize=0, maxsize=1000*1000*1000):
+    def init_queues(self, n=5, buffsize=0, maxsize=1000*1000*1000):
         maxsize = maxsize / n
         self.write_executor = ThreadPoolExecutor(poolsize=2, queuesize=100)
-        self.rqfile = FileDequeue(self.qdir)
+        self.rqfile = FileDequeue(self.qdir, reader=FPSortingQueueFileReader)
         self.qfiles = [FileEnqueue(self.qdir, suffix=str(i),
                                    maxsize=maxsize,
                                    buffer=buffsize,
