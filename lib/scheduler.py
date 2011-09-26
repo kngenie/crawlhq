@@ -176,7 +176,7 @@ class ClientQueue(object):
                 t0 = time.time()
                 curis = self.worksets[self.next].checkout(checkout_per_ws)
                 t = time.time() - t0
-                if t > 0.01:
+                if t > 0.1:
                     logging.warn('SLOW WorkSet.checkout #%s %d, %.4fs',
                                  self.worksets[self.next].wsid, len(curis), t)
                 self.next += 1

@@ -267,6 +267,11 @@ class FileDequeue(object):
                                  exc_info=1)
         logging.debug('recovering %s done', self.qdir)
 
+    def get_status(self):
+        r = dict(reader=(self.rqfile and hasattr(self.rqfile, 'get_status')
+                         and self.rqfile.get_status()))
+        return r
+
     def close(self):
         if self.rqfile:
             self.rqfile.close()

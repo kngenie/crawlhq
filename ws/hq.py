@@ -229,9 +229,9 @@ class Seen(object):
             except Empty:
                 pass
 
-    def already_seen(self, uri):
+    def already_seen(self, furi):
         self.ready.wait()
-        key = Seen.urikey(uri)
+        key = furi.get('id') or Seen.urikey(furi['u'])
         v = self.seendb.get(key)
         if not v:
             #self.seendb.put(key, '1')
@@ -272,7 +272,7 @@ class Seen(object):
 
 class FPSortingQueueFileReader(sortdequeue.SortingQueueFileReader):
     def urikey(self, o):
-        Seen.urikey(o['u'])
+        return Seen.urikey(o['u'])
 
 class PooledIncomingQueue(IncomingQueue):
     def init_queues(self, n=5, buffsize=0, maxsize=1000*1000*1000):
@@ -293,7 +293,7 @@ class PooledIncomingQueue(IncomingQueue):
         t0 = time.time()
         enq = self.avail.get()
         t = time.time() - t0
-        if t > 1e-3: logging.warn('self.avail.get() %.4f', t)
+        if t > 0.1: logging.warn('self.avail.get() %.4f', t)
         try:
             enq.queue(curis)
             self.addedcount += len(curis)
@@ -303,7 +303,7 @@ class PooledIncomingQueue(IncomingQueue):
             t0 = time.time()
             self.avail.put(enq)
             t = time.time() - t0
-            if t > 1e-4: logging.warn('slow self.avail.put() %.4f', t)
+            if t > 0.1: logging.warn('slow self.avail.put() %.4f', t)
 
 class OpenQueueQuota(object):
     def __init__(self, maxopens=256):
@@ -483,15 +483,17 @@ class CrawlJob(object):
                 result['excluded'] += 1
                 continue
             t0 = time.time()
-            u = furi['u']
-            suri = self.seen.already_seen(u)
+            suri = self.seen.already_seen(furi)
             if suri['e'] < int(time.time()):
-                w = dict()
-                for k in ('p','v','x'):
-                    m = furi.get(k)
-                    if m is not None:
-                        w[k] = m
-                curi = dict(u=u, id=suri['_id'], w=w)
+                if 'w' in furi:
+                    w = furi['w']
+                else:
+                    w = dict()
+                    for k in ('p','v','x'):
+                        m = furi.get(k)
+                        if m is not None:
+                            w[k] = m
+                curi = dict(u=furi['u'], id=suri['_id'], w=w)
                 self.scheduler.schedule(curi)
                 result['scheduled'] += 1
             result['ts'] += (time.time() - t0)
@@ -503,7 +505,7 @@ class CrawlJob(object):
         return o
 
     def feed(self, client, n):
-        logging.warn('feed %s begin', client)
+        logging.debug('feed %s begin', client)
         curis = self.scheduler.feed(client, n)
         r = [self.makecuri(u) for u in curis]
         #self.mongo.end_request()

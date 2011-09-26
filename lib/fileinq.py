@@ -62,6 +62,7 @@ class IncomingQueue(object):
         return dict(addedcount=self.addedcount,
                     processedcount=self.processedcount,
                     queuefilecount=self.rqfile.qfile_count(),
+                    dequeue=self.rqfile.get_status()
                     )
 
     def add(self, curis):

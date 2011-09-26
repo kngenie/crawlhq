@@ -1,4 +1,8 @@
 import sys, os
+import logging
+
+logging.basicConfig(level=logging.INFO)
+
 sys.path[0:0] = (os.path.realpath(os.path.join(sys.path[0], '../lib')),)
 
 from sortdequeue import SortingQueueFileReader
@@ -10,3 +14,4 @@ class FPSortingQueueFileReader(SortingQueueFileReader):
 r = FPSortingQueueFileReader(sys.argv[1], noupdate=True)
 for o in r:
     print o
+print >>sys.stderr, str(r.get_status())
