@@ -270,10 +270,11 @@ class Seen(object):
         finally:
             self.ready.set()
 
-class FPSortingQueueFileReader(sortdequeue.SortingQueueFileReader):
-    def urikey(self, o):
+def FPSortingQueueFileReader(qfile, **kwds):
+    def urikey(o):
         return Seen.urikey(o['u'])
-
+    return sortdequeue.SortingQueueFileReader(qfile, urikey)
+    
 class PooledIncomingQueue(IncomingQueue):
     def init_queues(self, n=5, buffsize=0, maxsize=1000*1000*1000):
         maxsize = maxsize / n
@@ -765,7 +766,7 @@ class ClientAPI:
 
     def do_seen(self, job):
         p = web.input()
-        u = hq.get_job(job).seen.already_seen(p.u)
+        u = hq.get_job(job).seen.already_seen(dict(u=p.u))
         if u:
             u['id'] = u.pop('_id', None)
         result = dict(u=u)
@@ -842,6 +843,10 @@ class ClientAPI:
                 r.update(success=0, error=str(ex), o=str(o), a=pe[0])
         logging.info("param: %s", r)
         return r
+
+    def do_threads(self, job):
+        r = [str(th) for th in threading.enumerate()]
+        return dict(success=1, r=r)
              
 if __name__ == "__main__":
     app.run()
