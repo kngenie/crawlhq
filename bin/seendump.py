@@ -4,7 +4,12 @@ sys.path.append('/opt/hq/lib')
 import leveldb
 import struct
 
-h = leveldb.IntHash('/1/crawling/hq/seen')
+if len(sys.argv) < 2:
+  print >>sys.stderr, "specify job name"
+  exit(1)
+job = sys.argv[1]
+
+h = leveldb.IntHash(os.path.join('/1/crawling/hq/seen', job))
 it = h.new_iterator()
 it.seek_to_first()
 while it.valid():
