@@ -24,6 +24,7 @@ import sortdequeue
 from scheduler import Scheduler
 import leveldb
 from executor import *
+from zkcoord import Coordinator
 import logging
 from mongodomaininfo import DomainInfo
 
@@ -36,15 +37,11 @@ urls = (
     )
 app = web.application(urls, globals())
 
-# if 'mongo' not in globals():
-#     mongohosts = ['localhost',
-#                   'crawl451.us.archive.org',
-#                   'crawl401.us.archive.org',
-#                   'crawl402.us.archive.org',
-#                   'crawl403.us.archive.org']
-#     mongo = pymongo.Connection(host=mongohosts, port=27017)
-# db = mongo.crawl
-# atexit.register(mongo.disconnect)
+hqconfig = dict(
+    zkhosts=','.join(['crawl433.us.archive.org:2181',
+                      'crawl434.us.archive.org:2181',
+                      'crawl402.us.archive.org:2181']),
+    )
 
 # _fp12 = FPGenerator(0xE758000000000000, 12)
 _fp31 = FPGenerator(0xBA75BB4300000000, 31)
@@ -538,6 +535,7 @@ class Headquarters(object):
         self.crawlinfo = MongoCrawlInfo('wide')
         self.domaininfo = DomainInfo()
         self.jobconfigs = MongoJobConfigs()
+        self.coordinator = Coordinator(hqconfig['zkhosts'])
 
     def shutdown(self):
         for job in self.jobs.values():
@@ -552,6 +550,7 @@ class Headquarters(object):
                     raise ValueError('unknown job %s' % jobname)
                 job = self.jobs[jobname] = CrawlJob(
                     self.jobconfigs, jobname, self.crawlinfo, self.domaininfo)
+                self.coordinator.publish_job(job)
             return job
 
         self.schedulers = {}
