@@ -432,7 +432,7 @@ class CrawlJob(object):
         #self.discovered_executor.shutdown()
 
     def get_status(self):
-        r = dict(job=self.jobname, hq=id(self))
+        r = dict(job=self.jobname, oid=id(self))
         r['sch'] = self.scheduler and self.scheduler.get_status()
         r['inq'] = self.inq and self.inq.get_status()
         return r
@@ -773,10 +773,11 @@ class ClientAPI:
         return result
 
     def do_status(self, job):
-        r = hq.get_job(job).get_status()
-        # if executor:
-        #     r['workqueuesize'] = executor.work_queue.qsize()
-        return r
+        try:
+            r = hq.get_job(job, nocreate=1).get_status()
+            return dict(success=1, r=r)
+        except Exception as ex:
+            return dict(success=0, err=str(ex))
 
     def do_worksetstatus(self, job):
         r = hq.get_job(job).get_workset_status()

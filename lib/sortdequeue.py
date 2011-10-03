@@ -47,7 +47,7 @@ class SortedQueue(object):
                     self.index.append((key, p))
             p = el + 1
         logging.debug('sorting %d entries in %s', len(self.index), self.fn)
-        self.index.sort(lambda x, y: cmp(x[0], y[0]))
+        self.index.sort(lambda x, y: cmp(x[0], y[0]), reverse=True)
         logging.debug('sorting done')
         self.itemcount = len(self.index)
         self.dupcount = 0
@@ -62,7 +62,8 @@ class SortedQueue(object):
 
     def peek(self, skip=None):
         while self.map and len(self.index) > 0:
-            if skip and self.index[-1][0] >= skip:
+            # be sure to change "<=" to ">=" if you change sort order
+            if skip and self.index[-1][0] <= skip:
                 # if not self.update:
                 #     self.map[a[1]] = '#'
                 self.index.pop()
@@ -112,6 +113,10 @@ class SortingQueueFileReader(object):
         self.prevkey = None
         self.dupcount = 0
         self.dispensecount = 0
+
+    @property
+    def fn(self):
+        return self.qfile.fn
 
     def get_status(self):
         r = dict(qfile=self.qfile.fn,

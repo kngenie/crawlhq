@@ -194,12 +194,12 @@ class FileEnqueue(object):
 class QueueFileReader(object):
     '''reads (dequeues) from single queue file'''
     def __init__(self, qfile, noupdate=False):
-        self.qfile = qfile
+        self.fn = qfile
         self.noupdate = noupdate
         self.map = None
         self.open()
     def open(self):
-        fd = os.open(self.qfile, os.O_RDWR)
+        fd = os.open(self.fn, os.O_RDWR)
         self.map = mmap.mmap(fd, 0, access=mmap.ACCESS_WRITE)
         # mmap dups fd. fd need not be kept open.
         os.close(fd)
@@ -211,7 +211,7 @@ class QueueFileReader(object):
     def next(self):
         if self.map is None:
             logging.warn("QueueFileReader:next called on closed file:%s",
-                         self.qfile)
+                         self.fn)
             raise StopIteration
         while self.pos < self.map.size():
             el = self.map.find('\n', self.pos + 1)
@@ -223,7 +223,7 @@ class QueueFileReader(object):
                 try:
                     return cjson.decode(l)
                 except Exception as ex:
-                    logging.warn('malformed line in %s at %d: %s', self.qfile,
+                    logging.warn('malformed line in %s at %d: %s', self.fn,
                                  self.pos, l)
                     continue
             self.pos = el + 1
@@ -355,12 +355,12 @@ class FileDequeue(object):
 
                 self.rqfile.close()
                 if not self.noupdate:
-                    with timelog('unlink %s' % self.rqfile.qfile, warn=0.001):
+                    with timelog('unlink %s' % self.rqfile.fn, warn=0.001):
                         try:
-                            os.unlink(self.rqfile.qfile)
+                            os.unlink(self.rqfile.fn)
                         except:
                             logging.warn("unlink failed on %s",
-                                         self.rqfile.qfile, exc_info=1)
+                                         self.rqfile.fn, exc_info=1)
                 self.rqfile = None
                 if not self.next_rqfile(timeout):
                     return None

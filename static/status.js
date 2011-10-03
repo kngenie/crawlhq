@@ -64,7 +64,11 @@ function seencheck(ev) {
 var last_status_update = 0;
 var last_inq_in = 0;
 var last_inq_out = 0;
-function renderstatus(data, status, xhr) {
+function renderstatus(resp, status, xhr) {
+  if (!resp.success) {
+    return;
+  }
+  var data = resp.r;
   //console.log(data);
   var d = jQuery('.jobstatus', '.job[jobname="'+data.job+'"]');
   d.empty();
