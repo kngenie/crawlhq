@@ -218,10 +218,6 @@ class Scheduler(object):
         self.worksets = [WorkSet(job, wsid) for wsid in xrange(self.NWORKSETS)]
         #self.load_workset_assignment()
 
-        self.use_crawlinfo = False
-        
-    PARAMS = [('use_crawlinfo', bool)]
-
     def shutdown(self):
         for clq in self.clients.values():
             clq.shutdown()
@@ -311,23 +307,11 @@ class Scheduler(object):
         '''
         wsid = self.mapper.workset(furi)
         self.worksets[wsid].deschedule(furi)
-        self.crawlinfo.save_result(furi)
         
     # Scheduler - feed request
 
     def feed(self, client, n):
         curis = self.get_clientqueue(client).feed(n)
-        if self.use_crawlinfo and len(curis) > 0 and self.crawlinfo:
-            # for curi in curis:
-            #     crawlinfo = self.crawlinfo.get_crawlinfo(curi)
-            #     if crawlinfo:
-            #         curi['a'] = crawlinfo
-            t0 = time.time()
-            self.crawlinfo.update_crawlinfo(curis)
-            t = time.time() - t0
-            if t / len(curis) > 0.5:
-                logging.info("slow update_crawlinfo: %s %.3fs/%d",
-                             client, t, len(curis))
         return curis
 
     # Scheduler - reset request

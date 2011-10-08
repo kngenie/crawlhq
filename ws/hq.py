@@ -411,9 +411,14 @@ class CrawlJob(object):
         #     buffsize=500)
         self.inq = PooledIncomingQueue(
             qdir=os.path.join(HQ_HOME, 'inq', self.jobname),
-            buffsize=500)
+            buffsize=1000)
 
         #self.discovered_executor = ThreadPoolExecutor(poolsize=1)
+
+        # currently disabled by default - too slow
+        self.use_crawlinfo = False
+
+    PARAMS = [('use_crawlinfo', bool)]
 
     def shutdown(self):
         logging.info("closing seen db")
@@ -505,8 +510,16 @@ class CrawlJob(object):
     def feed(self, client, n):
         logging.debug('feed %s begin', client)
         curis = self.scheduler.feed(client, n)
+        # add recrawl info if enabled
+        if self.use_crawlinfo and len(curis) > 0 and self.crawlinfodb:
+            t0 = time.time()
+            self.crawlinfodb.update_crawlinfo(curis)
+            t = time.time() - t0
+            if t / len(curis) > 0.5:
+                logging.warn("SLOW update_crawlinfo: %s %.3fs/%d",
+                             client, t, len(curis))
+            self.crawlinfodb.mongo.end_request()
         r = [self.makecuri(u) for u in curis]
-        #self.mongo.end_request()
         return r
 
     def finished(self, curis):
@@ -514,7 +527,11 @@ class CrawlJob(object):
         for curi in curis:
             self.scheduler.finished(curi)
             result['processed'] += 1
-        #self.mongo.end_request()
+        if self.crawlinfodb:
+            for curi in curis:
+                self.crawlinfodb.save_result(curi)
+            # XXX - until I come up with better design
+            self.crawlinfodb.mongo.end_request()
         return result
 
     def reset(self, client):
@@ -818,7 +835,7 @@ class ClientAPI:
             return dict(success=0, error='bad parameter name', name=name)
         on, pn = nc
         j = hq.get_job(job)
-        o = dict(scheduler=j.scheduler, inq=j.inq, hq=hq).get(on)
+        o = dict(scheduler=j.scheduler, inq=j.inq, hq=hq, job=j).get(on)
         if o is None:
             return dict(success=0, error='no such object', name=name)
         params = o.PARAMS
