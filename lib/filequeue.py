@@ -216,17 +216,18 @@ class QueueFileReader(object):
         while self.pos < self.map.size():
             el = self.map.find('\n', self.pos + 1)
             if el < 0: el = self.map.size()
-            if self.map[self.pos] == ' ':
-                l = self.map[self.pos + 1:el]
+            s = self.pos
+            self.pos = el + 1
+            if self.map[s] == ' ':
+                l = self.map[s + 1:el]
                 if not self.noupdate:
-                    self.map[self.pos] = '#'
+                    self.map[s] = '#'
                 try:
                     return cjson.decode(l)
                 except Exception as ex:
                     logging.warn('malformed line in %s at %d: %s', self.fn,
-                                 self.pos, l)
+                                 s, l)
                     continue
-            self.pos = el + 1
         raise StopIteration
 
 class FileDequeue(object):
