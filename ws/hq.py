@@ -527,7 +527,7 @@ class CrawlJob(object):
         for curi in curis:
             self.scheduler.finished(curi)
             result['processed'] += 1
-        if self.crawlinfodb:
+        if False and self.crawlinfodb:
             for curi in curis:
                 self.crawlinfodb.save_result(curi)
             # XXX - until I come up with better design
