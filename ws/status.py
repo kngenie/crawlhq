@@ -13,11 +13,21 @@ import json
 import time
 import re
 import itertools
-from cfpgenerator import FPGenerator
+#from cfpgenerator import FPGenerator
 from urlparse import urlsplit, urlunsplit
 import threading
 import random
 import atexit
+import logging
+
+import urihash
+from weblib import BaseApp
+from mongocrawlinfo import CrawlInfo
+from zkcoord import Coordinator
+from configobj import ConfigObj
+
+# read config
+hqconfig = ConfigObj('/opt/hq/conf/hq.conf')
 
 try:
     mongo = pymongo.Connection()
@@ -32,24 +42,8 @@ urls = (
     )
 app = web.application(urls, globals())
 
-def lref(name):
-    # note: SCRIPT_FILENAME is only available in mod_wsgi
-    if 'SCRIPT_FILENAME' not in web.ctx.environ:
-        return os.path.join(sys.path[0], name)
-    path = web.ctx.environ['SCRIPT_FILENAME']
-    return os.path.join(os.path.dirname(path), name)
-
-class Status:
+class Status(BaseApp):
     '''implements control web user interface for crawl headquarters'''
-    def __init__(self):
-        tglobals = dict(format=format)
-        self.templates = web.template.render(lref('t'), globals=tglobals)
-
-    def render(self, tmpl, *args, **kw):
-        # note self.templates[tmpl] does not work.
-        t = getattr(self.templates, tmpl)
-        return t(*args)
-
     def GET(self):
         if db is None:
             web.header('content-type', 'text/html')
@@ -85,7 +79,7 @@ class Query:
 
         return json.dumps(r)
 
-    _fp64 = FPGenerator(0xD74307D3FD3382DB, 64)
+    #_fp64 = FPGenerator(0xD74307D3FD3382DB, 64)
 
     def do_seen(self):
         p = web.input(u=None, j=None)
@@ -93,7 +87,7 @@ class Query:
         url, job = p.u, p.j
         if url is None or job is None:
             return json.dumps(r)
-        h = self._fp64.sfp(url)
+        h = urihash.urikey(url) #self._fp64.sfp(url)
         d = db.seen.find_one({'_id': h})
         if d is None:
             r.update(d=None, msg='not found')
@@ -110,7 +104,16 @@ class Query:
             r['seencount'] = db.seen[p.job].count()
         return json.dumps(r)
 
+    def do_crawlinfocount(self):
+        try:
+            r = db.seen.wide.count()
+            return json.dumps(dict(success=1, r=r))
+        except Exception as ex:
+            return json.dumps(dict(success=0, err=str(ex)))
+
 if __name__ == '__main__':
     app.run()
 else:
+    # for debugging
+    web.config.debug = hqconfig['web'].get('debug', False)
     application = app.wsgifunc()

@@ -13,4 +13,7 @@ h3 {
     font-weight: normal;
     margin-bottom: 2px;
 }
-
+.wait {
+    padding-right: 18px;
+    background: url(img/wait.gif) 100% 50% no-repeat;
+}
