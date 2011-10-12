@@ -27,7 +27,8 @@ from executor import *
 from zkcoord import Coordinator
 import logging
 from mongodomaininfo import DomainInfo
-
+from mongocrawlinfo import CrawlInfo
+import urihash
 logging.basicConfig(level=logging.WARN)
 
 HQ_HOME = '/1/crawling/hq'
@@ -116,54 +117,8 @@ class CrawlMapper(object):
         hosthash = int(_fp31.fp(h) >> (64 - self.nworksets_bits))
         return hosthash
 
-class MongoCrawlInfo(object):
-    '''database of re-crawl infomation. keeps fetch result from previous
-       crawl and makes it available in next cycle. this version uses MongoDB.'''
-    def __init__(self, jobname):
-        self.jobname = jobname
-        self.mongo = pymongo.Connection()
-        self.db = self.mongo.crawl
-        self.coll = self.db.seen[self.jobname]
-        
-    def shutdown(self):
-        self.coll = None
-        self.db = None
-        self.mongo.disconnect()
-
-    def save_result(self, furi):
-        if 'a' not in furi: return
-        if 'id' in furi:
-            key = int(furi['id'])
-        else:
-            key = Seen.urikey(furi['u'])
-        self.coll.update({'_id': key},
-                         {'$set':{'a': furi['a'], 'u': furi['u']}},
-                         upsert=True, multi=False)
-
-    def update_crawlinfo(self, curis):
-        '''updates curis with crawlinfo in bulk'''
-        tasks = [(self._set_crawlinfo, (curi,))
-                 for curi in curis if 'a' not in curi]
-        if tasks:
-            b = TaskBucket(tasks)
-            b.execute_wait(executor, 4)
-        
-    def _set_crawlinfo(self, curi):
-        key= curi['id']
-        r = self.coll.find_one({'_id': key}, {'a': 1})
-        if r and 'a' in r:
-            curi['a'] = r['a']
-
-    def get_crawlinfo(self, curi):
-        if 'a' in curi:
-            return curi['a']
-        key = curi['id']
-        r = self.coll.find_one({'_id': key}, {'a': 1})
-        return r and r.get('a')
-        
 class Seen(object):
-    _fp64 = FPGenerator(0xD74307D3FD3382DB, 64)
-    S64 = 1<<63
+    #_fp64 = FPGenerator(0xD74307D3FD3382DB, 64)
     EXPIRE_NEVER = (1<<32)-1
 
     def __init__(self, dbdir):
@@ -202,10 +157,10 @@ class Seen(object):
             it.next()
         return c
 
-    @staticmethod
-    def urikey(uri):
-        uhash = Seen._fp64.sfp(uri)
-        return uhash
+    # @staticmethod
+    # def urikey(uri):
+    #     uhash = Seen._fp64.sfp(uri)
+    #     return uhash
 
     @staticmethod
     def keyquery(key):
@@ -213,7 +168,7 @@ class Seen(object):
 
     @staticmethod
     def uriquery(uri):
-        return Seen.keyquery(Seen.urikey(uri))
+        return Seen.keyquery(urihash.urikey(uri))
 
     def drain_putqueue(self):
         # prevent multiple threads from racing on draining - it just
@@ -228,7 +183,7 @@ class Seen(object):
 
     def already_seen(self, furi):
         self.ready.wait()
-        key = furi.get('id') or Seen.urikey(furi['u'])
+        key = furi.get('id') or urihash.urikey(furi['u'])
         v = self.seendb.get(key)
         if not v:
             #self.seendb.put(key, '1')
@@ -269,7 +224,7 @@ class Seen(object):
 
 def FPSortingQueueFileReader(qfile, **kwds):
     def urikey(o):
-        return Seen.urikey(o['u'])
+        return urihash.urikey(o['u'])
     return sortdequeue.SortingQueueFileReader(qfile, urikey)
     
 class PooledIncomingQueue(IncomingQueue):
@@ -373,7 +328,7 @@ class HashSplitIncomingQueue(IncomingQueue):
         if 'id' in curi:
             return curi['id']
         else:
-            h = Seen.urikey(curi['u'])
+            h = urlhash.urikey(curi['u'])
             curi['id'] = h
             return h
 
@@ -417,8 +372,10 @@ class CrawlJob(object):
 
         # currently disabled by default - too slow
         self.use_crawlinfo = False
+        self.save_crawlinfo = False
 
-    PARAMS = [('use_crawlinfo', bool)]
+    PARAMS = [('use_crawlinfo', bool),
+              ('save_crawlinfo', bool)]
 
     def shutdown(self):
         logging.info("closing seen db")
@@ -527,7 +484,7 @@ class CrawlJob(object):
         for curi in curis:
             self.scheduler.finished(curi)
             result['processed'] += 1
-        if False and self.crawlinfodb:
+        if self.save_crawlinfo and self.crawlinfodb:
             for curi in curis:
                 self.crawlinfodb.save_result(curi)
             # XXX - until I come up with better design
@@ -549,7 +506,7 @@ class Headquarters(object):
         self.jobslock = threading.RLock()
         # single shared CrawlInfo database
         # named 'wide' for historical reasons.
-        self.crawlinfo = MongoCrawlInfo('wide')
+        self.crawlinfo = CrawlInfo('wide')
         self.domaininfo = DomainInfo()
         self.jobconfigs = MongoJobConfigs()
         self.coordinator = Coordinator(hqconfig['zkhosts'])
