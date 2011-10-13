@@ -11,6 +11,8 @@ import json
 import time
 import re
 import itertools
+from gzip import GzipFile
+from cStringIO import StringIO
 from cfpgenerator import FPGenerator
 from urlparse import urlsplit, urlunsplit
 import threading
@@ -588,6 +590,14 @@ class ClientAPI:
         web.header('content-type', 'text/json')
         return json.dumps(r, check_circular=False, separators=',:') + "\n"
     
+    def decode_content(self, data):
+        if web.ctx.env.get('HTTP_CONTENT_ENCODING') == 'gzip':
+            ib = StringIO(data)
+            zf = GzipFile(fileobj=ib)
+            return zf.read()
+        else:
+            return data
+            
     def post_mfinished(self, job):
         '''process finished event in a batch. array of finished crawl URIs
            in the body. each crawl URI is an object with following properties:
@@ -599,7 +609,7 @@ class ClientAPI:
               s: HTTP status code,
               (additional properties are allowed - HQ does not check)'''
         payload = web.data()
-        curis = json.loads(payload)
+        curis = json.loads(self.decode_content(payload))
 
         start = time.time()
         result = hq.get_job(job).finished(curis)
@@ -648,7 +658,7 @@ class ClientAPI:
         data = None
         try:
             data = web.data()
-            curis = json.loads(data)
+            curis = json.loads(self.decode_content(data))
         except:
             web.debug("json.loads error:data=%s" % data)
             result['error'] = 'invalid data - json parse failed'
@@ -708,10 +718,10 @@ class ClientAPI:
         # uri, path, via, context and data
         r = hq.get_job(job).feed((name, nodes), count)
         t = time.time() - start
-        if t > 0.01:
-            logging.warn("slow feed %s %s, %.4fs", name, len(r), t)
+        if t > 1.0:
+            logging.warn("slow feed %s:%s %s, %.4fs", job, name, len(r), t)
         else:
-            logging.debug("feed %s %s, %.4fs", name, len(r), t)
+            logging.debug("feed %s %s:%s, %.4fs", job, name, len(r), t)
 
         web.header('content-type', 'text/json')
         return self.jsonres(r)
