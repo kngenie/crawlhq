@@ -27,7 +27,12 @@ from zkcoord import Coordinator
 from configobj import ConfigObj
 
 # read config
-hqconfig = ConfigObj('/opt/hq/conf/hq.conf')
+hqconfig = ConfigObj([
+        '[web]',
+        'debug=False'
+        ])
+localconfig = ConfigObj('/opt/hq/conf/hq.conf')
+hqconfig.merge(localconfig)
 
 try:
     mongo = pymongo.Connection()
@@ -115,5 +120,5 @@ if __name__ == '__main__':
     app.run()
 else:
     # for debugging
-    web.config.debug = hqconfig['web'].get('debug', False)
+    web.config.debug = hqconfig['web']['debug']
     application = app.wsgifunc()
