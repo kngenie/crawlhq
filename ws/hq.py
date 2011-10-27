@@ -232,7 +232,7 @@ def FPSortingQueueFileReader(qfile, **kwds):
 class PooledIncomingQueue(IncomingQueue):
     def init_queues(self, n=5, buffsize=0, maxsize=1000*1000*1000):
         maxsize = maxsize / n
-        self.write_executor = ThreadPoolExecutor(poolsize=2, queuesize=100)
+        self.write_executor = ThreadPoolExecutor(poolsize=1, queuesize=100)
         self.rqfile = FileDequeue(self.qdir, reader=FPSortingQueueFileReader)
         self.qfiles = [FileEnqueue(self.qdir, suffix=str(i),
                                    maxsize=maxsize,
@@ -464,6 +464,17 @@ class CrawlJob(object):
         return result
 
     def makecuri(self, o):
+        if 'a' not in o:
+            if 'w' in o:
+                o['a'] = o['w']
+                del o['w']
+            else:
+                a = dict()
+                for k in 'pxv':
+                    if k in o:
+                        a[k] = o[k]
+                        del o[k]
+                if a: o['a'] = a
         return o
 
     def feed(self, client, n):
