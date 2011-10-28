@@ -44,6 +44,23 @@ class Coordinator(object):
     def get_servers(self):
         return zk.get_children(self.zh, NODE_SERVERS)
 
+    def get_status_of(self, server):
+        status = dict(name=server)
+        try:
+            node = zk.get(self.zh, NODE_SERVERS+'/'+server+'/alive')
+            status['alive'] = node[1]
+        except zk.NoNodeException:
+            pass
+        try:
+            jobs = zk.get_children(self.zh, NODE_SERVERS+'/'+server+'/jobs')
+            status['jobs'] = [dict(name=j) for j in jobs]
+        except zk.NoNodeException:
+            status['jobs'] = null;
+        return status
+
+    def get_servers_status(self):
+        return [self.get_status_of(server) for server in self.get_servers()]
+
     def shutdown(self):
         if self.zh:
             zk.close(self.zh)

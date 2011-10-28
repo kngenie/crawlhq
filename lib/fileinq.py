@@ -13,7 +13,7 @@ from executor import ThreadPoolExecutor
 class IncomingQueue(object):
     # default maxsize 1GB - this would be too big for multi-queue
     # settings
-    def __init__(self, qdir, noupdate=False,**kw):
+    def __init__(self, qdir, noupdate=False, norecover=False, **kw):
         # ensure qdir directory exists
         self.qdir = qdir
         if not os.path.isdir(self.qdir):
@@ -22,10 +22,14 @@ class IncomingQueue(object):
         self.addedcount = 0
         self.processedcount = 0
 
+        self.rqfile = None
+        self.qfiles = None
+
+        if not norecover:
+            FileEnqueue.recover(self.qdir)
         self.init_queues(**kw)
 
     def init_queues(self, buffsize=0, maxsize=1000*1000*1000):
-    
         # dequeue side
         self.rqfile = FileDequeue(self.qdir)
         # single queue file, no asynchronous writes
@@ -41,29 +45,35 @@ class IncomingQueue(object):
             enq.buffer_size = v
 
     def __del__(self):
-        self.close()
+        self.shutdown()
 
     def close(self, blocking=True):
-        for q in self.qfiles:
-            q.close(blocking=blocking)
-
+        if self.qfiles:
+            for q in self.qfiles:
+                q.close(blocking=blocking)
+            
     def flush(self):
-        for q in self.qfiles:
-            q._flush()
+        if self.qfiles:
+            for q in self.qfiles:
+                q._flush()
 
     def shutdown(self):
-        self.rqfile.close()
+        if self.rqfile:
+            self.rqfile.close()
         # _flush should be part of close, but not now.
         self.flush()
         self.write_executor.shutdown()
         self.close()
 
     def get_status(self):
-        return dict(addedcount=self.addedcount,
-                    processedcount=self.processedcount,
-                    queuefilecount=self.rqfile.qfile_count(),
-                    dequeue=self.rqfile.get_status()
-                    )
+        r = dict(addedcount=self.addedcount,
+                 processedcount=self.processedcount,
+                 queuefilecount=self.rqfile.qfile_count(),
+                 dequeue=self.rqfile.get_status()
+                 )
+        if self.rqfile:
+            r['queuefilecount'] = self.rqfile.qfile_count()
+        return r
 
     def add(self, curis):
         result = dict(processed=0)

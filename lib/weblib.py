@@ -2,6 +2,8 @@ import os
 import json
 
 import web
+from cStringIO import StringIO
+from gzip import GzipFile
 
 def lref(name):
     """returns local path for script-relative resource 'name'
@@ -31,7 +33,15 @@ class QueryApp(object):
             r = json.dumps(r, check_circular=False, separators=',:') + '\n'
             web.header('content-type', 'text/json')
         return r
-        
+
+    def decode_content(self, data):
+        if web.ctx.env.get('HTTP_CONTENT_ENCODING') == 'gzip':
+            ib = StringIO(data)
+            zf = GzipFile(fileobj=ib)
+            return zf.read()
+        else:
+            return data
+            
     def GET(self, c):
         return self._dispatch('do_'+c)
     def POST(self, c):

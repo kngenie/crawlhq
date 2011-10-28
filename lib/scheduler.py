@@ -3,7 +3,6 @@ import pymongo
 import time
 import re
 import itertools
-#from cfpgenerator import FPGenerator
 from urlparse import urlsplit, urlunsplit
 import threading
 import random
@@ -12,19 +11,15 @@ import traceback
 from filequeue import FileEnqueue, FileDequeue
 import logging
 
-#_fp31 = FPGenerator(0xBA75BB4300000000, 31)
-
-# TODO: move Seen and CrawlInfo to HQ main file
 class WorkSet(object):
-    WORKSET_DIR = '/1/crawling/hq/ws'
-    def __init__(self, jobname, wsid):
-        self.job = jobname
+
+    def __init__(self, wsdir, wsid):
         self.wsid = wsid
 
-        self.qdir = os.path.join(WorkSet.WORKSET_DIR,
-                                 self.job, str(self.wsid))
+        self.qdir = os.path.join(wsdir, str(self.wsid))
 
-        self.enq = FileEnqueue(self.qdir, buffer=500)
+        #FileEnqueue.recover(self.qdir)
+        #self.enq = FileEnqueue(self.qdir, buffer=500)
         self.deq = FileDequeue(self.qdir)
 
         self.running = True
@@ -36,8 +31,9 @@ class WorkSet(object):
 
     def flush(self):
         # _flush() should be part of close(), but not now
-        self.enq._flush()
-        self.enq.close()
+        #self.enq._flush()
+        #self.enq.close()
+        pass
         
     def shutdown(self):
         self.flush()
@@ -51,9 +47,9 @@ class WorkSet(object):
                  )
         return r
 
-    def schedule(self, curi):
-        self.enq.queue(curi)
-        self.scheduledcount += 1
+    # def schedule(self, curi):
+    #     self.enq.queue(curi)
+    #     self.scheduledcount += 1
 
     def checkout(self, n):
         if not self.running:
@@ -62,7 +58,7 @@ class WorkSet(object):
         while len(r) < n:
             curi = self.deq.get(timeout=0.001)
             if curi is None:
-                self.enq.close()
+                #self.enq.close()
                 break
             r.append(curi)
         self.checkedoutcount += len(r)
@@ -74,8 +70,7 @@ class WorkSet(object):
 class ClientQueue(object):
     CHECKEDOUT_SPILL_SIZE = 10000
 
-    def __init__(self, job, worksets):
-        #self.job = job
+    def __init__(self, worksets):
         self.worksets = worksets
         if len(self.worksets) == 0:
             logging.warn("%s: no worksets", self)
@@ -203,20 +198,15 @@ class ClientQueue(object):
 
 class Scheduler(object):
     '''per job scheduler. manages assignment of worksets to each client.'''
-    #NWORKSETS = 4096
-    #NWORKSETS_BITS = 8
-    #NWORKSETS = 256
-    #NWORKSETS = 1 << NWORKSETS_BITS
     
-    def __init__(self, job, mapper, crawlinfodb=None):
-        self.job = job
+    def __init__(self, wsdir, mapper):
+        self.wsdir = wsdir
         self.mapper = mapper
         self.NWORKSETS = self.mapper.nworksets
         self.clients = {}
-        self.crawlinfo = crawlinfodb
 
-        self.worksets = [WorkSet(job, wsid) for wsid in xrange(self.NWORKSETS)]
-        #self.load_workset_assignment()
+        self.worksets = [WorkSet(wsdir, wsid)
+                         for wsid in xrange(self.NWORKSETS)]
 
     def shutdown(self):
         for clq in self.clients.values():
@@ -237,43 +227,12 @@ class Scheduler(object):
         r = [ws.get_status() for ws in self.worksets]
         return r
 
-    # def get_jobconf(self):
-    #     self.jobconf = self.db.jobconfs.find_one({'name':self.job})
-    #     if self.jobconf is None:
-    #         self.jobconf = {'name':self.job}
-    #         self.db.jobconfs.save(self.jobconf)
-
-    # def create_default_workset_assignment(self):
-    #     num_nodes = self.jobconf.get('nodes', 20)
-    #     return list(itertools.islice(
-    #             itertools.cycle(xrange(num_nodes)),
-    #             0, len(self.worksets)))
-        
-    # def load_workset_assignment(self):
-    #     r = self.db.jobconfs.find_one({'name':self.job}, {'wscl':1})
-    #     wscl = self.jobconf.get('wscl')
-    #     if wscl is None:
-    #         wscl = self.create_default_workset_assignment()
-    #         self.jobconf['wscl'] = wscl
-    #         self.db.jobconfs.save(self.jobconf)
-    #     if len(wscl) > len(self.worksets):
-    #         wscl[len(self.worksets):] = ()
-    #     elif len(wscl) < len(self.worksets):
-    #         wscl.extend(itertools.repeat(None, len(self.worksets)-len(wscl)))
-    #     self.worksetclient = wscl
-
-    # def wsidforclient(self, client):
-    #     '''return list of workset ids for node name of nodes-node cluster'''
-    #     qids = [i for i in xrange(len(self.worksetclient))
-    #             if self.worksetclient[i] == client[0]]
-    #     return qids
-
     def get_clientqueue(self, client):
         clid = client[0]
         q = self.clients.get(clid)
         if q is None:
             worksets = [self.worksets[i] for i in self.mapper.wsidforclient(client)]
-            q = ClientQueue(self.job, worksets)
+            q = ClientQueue(worksets)
             self.clients[clid] = q
             logging.debug("new ClientQueue created for clid=%s", clid)
         return q

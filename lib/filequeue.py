@@ -51,6 +51,33 @@ class FileEnqueue(object):
 
     WRITE_BUFSIZE = 50000
 
+    @staticmethod
+    def recover(qdir):
+        """fixes qfiles left open in qdir. this method is static
+        as it should not be run automatically in __init__ if there
+        are multiple FileEnqueue's for a directory."""
+        logging.debug('recovering %s', qdir)
+        try:
+            ls = os.listdir(qdir)
+        except Exception as ex:
+            # no directory is fine
+            if isinstance(ex, OSError) and ex.errno == 2:
+                return
+            logging.warn('listdir failed on %s', qdir, exc_info=1)
+            return
+        recovered = []
+        for f in ls:
+            if f.endswith('.open'):
+                try:
+                    os.rename(os.path.join(qdir, f),
+                              os.path.join(qdir, f[:-5]))
+                    recovered.append(f)
+                except:
+                    logging.warn('rename %s to %s failed', f, f[:-5],
+                                 exc_info=1)
+        logging.debug('recovering %s done (%d files fixed)',
+                      qdir, len(recovered))
+
     def _open(self, fn):
         if self.opener: self.opener.opening(self)
         qf = os.path.join(self.qdir, fn)
@@ -232,7 +259,7 @@ class QueueFileReader(object):
 
 class FileDequeue(object):
     '''multi-queue file reader'''
-    def __init__(self, qdir, noupdate=False, norecover=False,
+    def __init__(self, qdir, noupdate=False,
                  reader=QueueFileReader):
         '''reader should be a factory function for QueueFileReader-compatible
            object.'''
@@ -244,33 +271,15 @@ class FileDequeue(object):
         self.reader = reader
 
         self.qfile_read = 0
-        if not norecover:
-            self._recover()
-
-    def _recover(self):
-        '''fix qfiles left open'''
-        logging.debug('recovering %s', self.qdir)
-        try:
-            ls = os.listdir(self.qdir)
-        except Exception as ex:
-            # no directory is fine
-            if isinstance(ex, OSError) and ex.errno == 2:
-                return
-            logging.warn('listdir failed on %s', self.qdir, exc_info=1)
-            return
-        for f in ls:
-            if f.endswith('.open'):
-                try:
-                    os.rename(os.path.join(self.qdir, f),
-                              os.path.join(self.qdir, f[:-5]))
-                except:
-                    logging.warn('rename %s to %s failed', f, f[:-5],
-                                 exc_info=1)
-        logging.debug('recovering %s done', self.qdir)
+        self.dequeuecount = 0
 
     def get_status(self):
         r = dict(reader=(self.rqfile and hasattr(self.rqfile, 'get_status')
-                         and self.rqfile.get_status()))
+                         and self.rqfile.get_status()),
+                 queuefilecount=self.qfile_count(),
+                 queuefilereadcount=self.qfile_read,
+                 dequeuecount=self.dequeuecount
+                 )
         return r
 
     def close(self):
@@ -352,7 +361,9 @@ class FileDequeue(object):
         while 1:
             if self.rqfile:
                 curi = next(self.rqfile, None)
-                if curi: return curi
+                if curi:
+                    self.dequeuecount += 1
+                    return curi
 
                 self.rqfile.close()
                 if not self.noupdate:
@@ -368,3 +379,33 @@ class FileDequeue(object):
             else:
                 if not self.next_rqfile(timeout):
                     return None
+
+class DummyFileDequeue(FileDequeue):
+    """class compatible with FileDequeue, but has no actual 'dequeue'
+    functionality. It's used for providing statistics.
+    """
+    def __init__(self, qdir, **kwds):
+        super(DummyFileDequeue, self).__init__(qdir)
+        self.lastscan = None
+        
+    def qfile_count(self):
+        self.__update_rqfiles()
+        return super(DummyFileDequeue, self).qfile_count()
+
+    def scan(self):
+        """extended so that those files remove on the filesystem
+        are dropped from self.rqfiles as well"""
+        self.rqfiles = []
+        supr(DummyFileDequeue, self).scan()
+
+    def __update_rqfiles(self):
+        try:
+            mtime = os.stat(self.qdir).st_mtime
+            if mtime > self.lastscan:
+                self.scan()
+        except Exception as ex:
+            logging.warn('error:%s', ex)
+
+    def get(self, *kwds):
+        return None
+
