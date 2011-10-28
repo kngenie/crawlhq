@@ -20,6 +20,9 @@ import random
 from Queue import Queue, Empty, Full, LifoQueue
 import traceback
 import atexit
+import logging
+
+import hqconfig
 from fileinq import IncomingQueue
 from filequeue import FileEnqueue, FileDequeue
 import sortdequeue
@@ -27,7 +30,6 @@ from scheduler import Scheduler
 import leveldb
 from executor import *
 from zkcoord import Coordinator
-import logging
 from mongodomaininfo import DomainInfo
 from mongocrawlinfo import CrawlInfo
 import urihash
@@ -40,12 +42,6 @@ urls = (
     )
 app = web.application(urls, globals())
 
-hqconfig = dict(
-    zkhosts=','.join(['crawl433.us.archive.org:2181',
-                      'crawl434.us.archive.org:2181',
-                      'crawl402.us.archive.org:2181']),
-    )
-
 # _fp12 = FPGenerator(0xE758000000000000, 12)
 _fp31 = FPGenerator(0xBA75BB4300000000, 31)
 # _fp32 = FPGenerator(0x9B6C9A2F80000000, 32)
@@ -53,9 +49,8 @@ _fp31 = FPGenerator(0xBA75BB4300000000, 31)
 # _fp64 = FPGenerator(0xD74307D3FD3382DB, 64)
 
 class MongoJobConfigs(object):
-    def __init__(self):
-        self.mongo = pymongo.Connection()
-        self.db = self.mongo.crawl
+    def __init__(self, db):
+        self.db = db
 
     def get_jobconf(self, job, pname, default=None, nocreate=0):
         jobconf = self.db.jobconfs.find_one({'name':job}, {pname: 1})
@@ -520,14 +515,20 @@ class Headquarters(object):
         # single shared CrawlInfo database
         # named 'wide' for historical reasons.
         self.crawlinfo = CrawlInfo('wide')
-        self.domaininfo = DomainInfo()
-        self.jobconfigs = MongoJobConfigs()
-        self.coordinator = Coordinator(hqconfig['zkhosts'])
+        logging.warn('configobj=%s', hqconfig.configobj())
+        logging.warn('mongo=%s', hqconfig.get('mongo'))
+        self.mongo = pymongo.Connection(hqconfig.get('mongo'))
+        self.configdb = self.mongo.crawl
+        self.domaininfo = DomainInfo(self.configdb)
+        self.jobconfigs = MongoJobConfigs(self.configdb)
+        self.coordinator = Coordinator(hqconfig.get('zkhosts'))
 
     def shutdown(self):
         for job in self.jobs.values():
             job.shutdown()
         self.domaininfo.shutdown()
+        self.configdb = None
+        self.mongo.disconnect()
 
     def get_job(self, jobname, nocreate=False):
         with self.jobslock:
@@ -844,6 +845,11 @@ class ClientAPI:
         return dict(success=1, r=r)
              
 if __name__ == "__main__":
-    app.run()
+    # FastCGI/stand-alone. Under FastCGI exception in app.run() does not
+    # appear in server error log.
+    try:
+        app.run()
+    except Exception as ex:
+        logging.critical('app.run() terminated with error', exc_info=1)
 else:
     application = app.wsgifunc()

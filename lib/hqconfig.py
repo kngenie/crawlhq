@@ -1,5 +1,6 @@
 # HQ configuration
 import os
+from configobj import ConfigObj
 
 HQ_HOME = '/1/crawling/hq'
 
@@ -17,9 +18,16 @@ def seendir(job):
 def worksetdir(job):
     return os.path.join(WORKSETDIR, job)
 
-ZKHOSTS = ','.join(['crawl433.us.archive.org:2181',
-                    'crawl434.us.archive.org:2181',
-                    'crawl402.us.archive.org:2181'])
+ZKHOSTS = ['crawl433.us.archive.org:2181',
+           'crawl434.us.archive.org:2181',
+           'crawl402.us.archive.org:2181']
+
+DEFAULT_CONFIG = [
+    'zkhosts='+','.join(ZKHOSTS),
+    'mongo=localhost',
+    '[web]',
+    'debug=0'
+    ]
 
 __jobconfig = None
 def jobconfig():
@@ -32,7 +40,9 @@ _configobj = None
 def configobj():
     global _configobj
     if _configobj is None:
-        _configobj = ConfigObj('/opt/hq/conf/hq.conf')
+        _configobj = ConfigObj(DEFAULT_CONFIG)
+        local_configobj = ConfigObj('/opt/hq/conf/hq.conf')
+        _configobj.merge(local_configobj)
     return _configobj
 
 def get(p, dv=None):

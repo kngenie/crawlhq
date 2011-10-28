@@ -8,7 +8,7 @@ class CrawlInfo(object):
        crawl and makes it available in next cycle. this version uses MongoDB.'''
     def __init__(self, jobname):
         self.jobname = jobname
-        self.mongo = pymongo.Connection()
+        self.mongo = pymongo.Connection(host='crawl401')
         self.db = self.mongo.crawl
         self.coll = self.db.seen[self.jobname]
         

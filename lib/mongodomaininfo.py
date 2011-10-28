@@ -6,22 +6,17 @@ import logging
 class DomainInfo(object):
     '''DomainInfo backed by MongoDB. each domain info is stored as
        a document in crawl.domain collection whose _id is domain name'''
-    def __init__(self, db='crawl'):
-        self.mongo = pymongo.Connection()
-        self.db = self.mongo[db]
-        self.coll = self.db.domain
+    def __init__(self, db):
+        self.coll = db.domain
 
         self.root = dict()
         self.load()
 
     def shutdown(self):
         self.coll = None
-        self.db = None
-        self.mongo.disconnect()
 
     def __del__(self):
-        if self.db:
-            self.shutdown()
+        self.shutdown()
 
     def load(self):
         '''cache all data into memory'''
