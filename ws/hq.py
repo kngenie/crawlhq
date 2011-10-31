@@ -352,7 +352,9 @@ class CrawlJob(object):
         self.jobname = jobname
         self.mapper = CrawlMapper(self.jobconfigs, self.jobname,
                                   self.NWORKSETS_BITS)
-        self.seen = Seen(dbdir=os.path.join(HQ_HOME, 'seen', self.jobname))
+        # seen-db initialization is delayed until it's actually needed
+        self.seen = None
+        #self.seen = Seen(dbdir=os.path.join(HQ_HOME, 'seen', self.jobname))
         #self.crawlinfodb = MongoCrawlInfo(self.jobname)
         self.crawlinfodb = crawlinfo
         self.domaininfo = domaininfo
@@ -362,7 +364,7 @@ class CrawlJob(object):
         #     qdir=os.path.join(HQ_HOME, 'inq', self.jobname),
         #     buffsize=500)
         self.inq = PooledIncomingQueue(
-            qdir=os.path.join(HQ_HOME, 'inq', self.jobname),
+            qdir=hqconfig.inqdir(self.jobname),
             buffsize=1000)
 
         #self.discovered_executor = ThreadPoolExecutor(poolsize=1)
@@ -375,8 +377,9 @@ class CrawlJob(object):
               ('save_crawlinfo', bool)]
 
     def shutdown(self):
-        logging.info("closing seen db")
-        self.seen.close()
+        if self.seen:
+            logging.info("closing seen db")
+            self.seen.close()
         logging.info("shutting down scheduler")
         self.scheduler.shutdown()
         logging.info("closing incoming queues")
@@ -389,6 +392,7 @@ class CrawlJob(object):
 
     def get_status(self):
         r = dict(job=self.jobname, oid=id(self))
+        r['seen'] = self.seen and self.seen.get_status()
         r['sch'] = self.scheduler and self.scheduler.get_status()
         r['inq'] = self.inq and self.inq.get_status()
         return r
@@ -428,6 +432,9 @@ class CrawlJob(object):
         upper limit on number of URIs processed in this single call.
         actual number of URIs processed may exceed it if incoming queue
         stores URIs in chunks.'''
+        # lazy initialization of seen db
+        if not self.seen:
+            self.seen = Seen(dbdir=hqconfig.seendir(self.jobname))
         result = dict(processed=0, scheduled=0, excluded=0, td=0.0, ts=0.0)
         for count in xrange(maxn):
             t0 = time.time()
@@ -515,8 +522,6 @@ class Headquarters(object):
         # single shared CrawlInfo database
         # named 'wide' for historical reasons.
         self.crawlinfo = CrawlInfo('wide')
-        logging.warn('configobj=%s', hqconfig.configobj())
-        logging.warn('mongo=%s', hqconfig.get('mongo'))
         self.mongo = pymongo.Connection(hqconfig.get('mongo'))
         self.configdb = self.mongo.crawl
         self.domaininfo = DomainInfo(self.configdb)
@@ -557,6 +562,9 @@ class Headquarters(object):
     @loglevel.setter
     def loglevel(self, level):
         logging.getLogger().setLevel(level)
+
+    def reload_domaininfo(self):
+        self.domaininfo.load()
 
 #executor = ThreadPoolExecutor(poolsize=4)
 hq = Headquarters()
@@ -843,6 +851,14 @@ class ClientAPI:
     def do_threads(self, job):
         r = [str(th) for th in threading.enumerate()]
         return dict(success=1, r=r)
+
+    def do_reloaddomaininfo(self, job):
+        # job is irrelevant
+        try:
+            hq.reload_domaininfo()
+            return dict(success=1)
+        except Exception as ex:
+            return dict(success=0, error=str(ex))
              
 if __name__ == "__main__":
     # FastCGI/stand-alone. Under FastCGI exception in app.run() does not

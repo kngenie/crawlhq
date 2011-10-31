@@ -21,6 +21,8 @@ class Seen(object):
         self.putqueue = Queue(1000)
         self.drainlock = threading.RLock()
 
+        self.addedcount = 0
+
     def default_block_cache_size(self):
         try:
             f = open('/proc/meminfo')
@@ -53,6 +55,15 @@ class Seen(object):
         self.seendb.close()
         logging.info("closing leveldb...done")
         self.seendb = None
+
+    def get_status(self):
+        s = dict(
+            ready=self.ready.is_set(),
+            blockcachesize=self.block_cache_size,
+            putqueuesize=self.putqueue.size(),
+            addedcount=self.addedcount
+            )
+        return s
 
     def _count(self):
         self.ready.wait()
@@ -98,6 +109,7 @@ class Seen(object):
             while 1:
                 try:
                     self.putqueue.put_nowait(key)
+                    self.addedcount += 1
                     break
                 except Full:
                     self.drain_putqueue()
