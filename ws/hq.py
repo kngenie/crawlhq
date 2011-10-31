@@ -358,10 +358,10 @@ class CrawlJob(object):
         #self.crawlinfodb = MongoCrawlInfo(self.jobname)
         self.crawlinfodb = crawlinfo
         self.domaininfo = domaininfo
-        self.scheduler = Scheduler(self.jobname, self.mapper,
-                                   self.crawlinfodb)
+        self.scheduler = Scheduler(hqconfig.worksetdir(self.jobname),
+                                   self.mapper)
         # self.inq = HashSplitIncomingQueue(
-        #     qdir=os.path.join(HQ_HOME, 'inq', self.jobname),
+        #     qdir=hqconfig.inqdir(self.jobname),
         #     buffsize=500)
         self.inq = PooledIncomingQueue(
             qdir=hqconfig.inqdir(self.jobname),
@@ -780,6 +780,7 @@ class ClientAPI:
             r = hq.get_job(job, nocreate=1).get_status()
             return dict(success=1, r=r)
         except Exception as ex:
+            logging.error('get_status failed', exc_info=1)
             return dict(success=0, err=str(ex))
 
     def do_worksetstatus(self, job):
