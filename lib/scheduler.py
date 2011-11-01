@@ -8,18 +8,21 @@ import threading
 import random
 from Queue import Queue, Empty
 import traceback
-from filequeue import FileEnqueue, FileDequeue
+from filequeue import FileEnqueue, FileDequeue, DummyFileEnqueue
 import logging
 
 class WorkSet(object):
 
-    def __init__(self, wsdir, wsid):
+    def __init__(self, wsdir, wsid, writing=False):
         self.wsid = wsid
 
         self.qdir = os.path.join(wsdir, str(self.wsid))
 
-        #FileEnqueue.recover(self.qdir)
-        #self.enq = FileEnqueue(self.qdir, buffer=500)
+        if writing:
+            FileEnqueue.recover(self.qdir)
+            self.enq = FileEnqueue(self.qdir, buffer=500)
+        else:
+            self.enq = DummyFileEnqueue(self.qdir)
         self.deq = FileDequeue(self.qdir)
 
         self.running = True
@@ -31,9 +34,8 @@ class WorkSet(object):
 
     def flush(self):
         # _flush() should be part of close(), but not now
-        #self.enq._flush()
-        #self.enq.close()
-        pass
+        self.enq._flush()
+        self.enq.close()
         
     def shutdown(self):
         self.flush()
@@ -47,9 +49,9 @@ class WorkSet(object):
                  )
         return r
 
-    # def schedule(self, curi):
-    #     self.enq.queue(curi)
-    #     self.scheduledcount += 1
+    def schedule(self, curi):
+        self.enq.queue(curi)
+        self.scheduledcount += 1
 
     def checkout(self, n):
         if not self.running:
@@ -58,7 +60,7 @@ class WorkSet(object):
         while len(r) < n:
             curi = self.deq.get(timeout=0.001)
             if curi is None:
-                #self.enq.close()
+                self.enq.close()
                 break
             r.append(curi)
         self.checkedoutcount += len(r)
@@ -205,7 +207,7 @@ class Scheduler(object):
         self.NWORKSETS = self.mapper.nworksets
         self.clients = {}
 
-        self.worksets = [WorkSet(wsdir, wsid)
+        self.worksets = [WorkSet(wsdir, wsid, writing=True)
                          for wsid in xrange(self.NWORKSETS)]
 
     def shutdown(self):

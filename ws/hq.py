@@ -33,6 +33,8 @@ from zkcoord import Coordinator
 from mongodomaininfo import DomainInfo
 from mongocrawlinfo import CrawlInfo
 import urihash
+from seen import Seen
+
 logging.basicConfig(level=logging.WARN)
 
 HQ_HOME = '/1/crawling/hq'
@@ -114,111 +116,6 @@ class CrawlMapper(object):
         hosthash = int(_fp31.fp(h) >> (64 - self.nworksets_bits))
         return hosthash
 
-class Seen(object):
-    #_fp64 = FPGenerator(0xD74307D3FD3382DB, 64)
-    EXPIRE_NEVER = (1<<32)-1
-
-    def __init__(self, dbdir):
-        self.dbdir = dbdir
-        self.ready = threading.Event()
-        self._open()
-        self.ready.set()
-        self.putqueue = Queue(1000)
-        self.drainlock = threading.RLock()
-
-    def _open(self):
-        logging.info("opening seen-db %s", self.dbdir)
-        self.seendb = leveldb.IntHash(self.dbdir,
-                                      block_cache_size=16*(1024**3),
-                                      block_size=4096,
-                                      max_open_files=256,
-                                      write_buffer_size=128*(1024**2))
-        logging.info("seen-db %s is ready", self.dbdir)
-
-    def close(self):
-        logging.info("flushing putqueue (%d)", self.putqueue.qsize())
-        self.drain_putqueue()
-        logging.info("closing leveldb...")
-        self.seendb.close()
-        logging.info("closing leveldb...done")
-        self.seendb = None
-
-    def _count(self):
-        self.ready.wait()
-        it = self.seendb.new_iterator()
-        if not it: return 0
-        it.seek_to_first()
-        c = 0
-        while it.valid():
-            c += 1
-            it.next()
-        return c
-
-    # @staticmethod
-    # def urikey(uri):
-    #     uhash = Seen._fp64.sfp(uri)
-    #     return uhash
-
-    @staticmethod
-    def keyquery(key):
-        return {'_id': key}
-
-    @staticmethod
-    def uriquery(uri):
-        return Seen.keyquery(urihash.urikey(uri))
-
-    def drain_putqueue(self):
-        # prevent multiple threads from racing on draining - it just
-        # makes performance worse. should not happen often
-        with self.drainlock:
-            try:
-                while 1:
-                    key = self.putqueue.get_nowait()
-                    self.seendb.put(key, '1')
-            except Empty:
-                pass
-
-    def already_seen(self, furi):
-        self.ready.wait()
-        key = furi.get('id') or urihash.urikey(furi['u'])
-        v = self.seendb.get(key)
-        if not v:
-            #self.seendb.put(key, '1')
-            while 1:
-                try:
-                    self.putqueue.put_nowait(key)
-                    break
-                except Full:
-                    self.drain_putqueue()
-            return {'_id': key, 'e': 0}
-        else:
-            return {'_id': key, 'e': self.EXPIRE_NEVER}
-
-    def repair(self):
-        self.ready.clear()
-        try:
-            self.close()
-            leveldb.IntHash.repair_db(self.dbdir)
-            self._open()
-        finally:
-            self.ready.set()
-
-    def clear(self):
-        self.ready.clear()
-        try:
-            self.close()
-            logging.info('deleting files in %s', self.dbdir)
-            for f in os.listdir(self.dbdir):
-                p = os.path.join(self.dbdir, f)
-                try:
-                    os.remove(p)
-                except:
-                    logging.warn('os.remove failed on %s', p, exc_info=1)
-            logging.info('done deleting files, re-creating %s', self.dbdir)
-            self._open()
-        finally:
-            self.ready.set()
-
 def FPSortingQueueFileReader(qfile, **kwds):
     def urikey(o):
         return urihash.urikey(o['u'])
@@ -254,95 +151,6 @@ class PooledIncomingQueue(IncomingQueue):
             self.avail.put(enq)
             t = time.time() - t0
             if t > 0.1: logging.warn('slow self.avail.put() %.4f', t)
-
-class OpenQueueQuota(object):
-    def __init__(self, maxopens=256):
-        self.maxopens = maxopens
-        self.lock = threading.Condition()
-        self.opens = set()
-
-    def opening(self, fileq):
-        logging.debug("opening %s", fileq)
-        with self.lock:
-            logging.debug("opening:locked")
-            while len(self.opens) >= self.maxopens:
-                for q in list(self.opens):
-                    logging.debug("  try closing %s", q)
-                    if q.detach():
-                        break
-                # if everybody's busy (unlikely), keep trying in busy loop
-                # sounds bad...
-            self.opens.add(fileq)
-        logging.debug("opening:released")
-
-    def closed(self, fileq):
-        logging.debug("closed %s", fileq)
-        with self.lock:
-            logging.debug("closed:locked")
-            self.opens.discard(fileq)
-            #self.lock.notify()
-        logging.debug("closed:released")
-            
-class HashSplitIncomingQueue(IncomingQueue):
-    def init_queues(self, window_bits=54, buffsize=0, maxsize=200*1000*1000,
-                    maxopens=256):
-        self.opener = OpenQueueQuota(maxopens=maxopens)
-        if window_bits < 1 or window_bits > 63:
-            raise ValueError, 'window_bits must be 1..63'
-        self.window_bits = window_bits
-
-        self.nwindows = (1 << 64 - self.window_bits)
-        self.win_mask = self.nwindows - 1
-                               
-        maxsize = maxsize / self.nwindows
-
-        # dequeue side
-        self.rqfile = FileDequeue(self.qdir)
-
-        # queues for each sub-range
-        self.write_executor = ThreadPoolExecutor(poolsize=2, queuesize=10)
-        self.qfiles = [FileEnqueue(self.qdir, maxsize=maxsize,
-                                   suffix=str(i), opener=opener,
-                                   buffer=buffsize,
-                                   executor=self.write_executor)
-                       for i in range(self.nwindows)]
-
-    def get_status(self):
-        s = IncomingQueue.get_status()
-        s.update(writequeue=self.write_executor.work_queue.qsize())
-        return s
-
-    @property
-    def maxopens(self):
-        return self.opener.maxopens
-    @maxopens.setter
-    def maxopens(self, v):
-        self.opener.maxopens = v
-
-    PARAMS = [('buffsize', int), ('maxopens', int)]
-
-    def hash(self, curi):
-        if 'id' in curi:
-            return curi['id']
-        else:
-            h = urlhash.urikey(curi['u'])
-            curi['id'] = h
-            return h
-
-    def queue_dispatch(self, curi):
-        h = self.hash(curi)
-        win = (h >> self.window_bits) & self.win_mask
-        return win
-
-    def add(self, curis):
-        processed = 0
-        for curi in curis:
-            win = self.queue_dispatch(curi)
-            enq = self.qfiles[win]
-            enq.queue(curi)
-            self.addedcount += 1
-            processed += 1
-        return dict(processed=processed)
 
 class CrawlJob(object):
     NWORKSETS_BITS = 8
