@@ -60,7 +60,7 @@ class Seen(object):
         s = dict(
             ready=self.ready.is_set(),
             blockcachesize=self.block_cache_size,
-            putqueuesize=self.putqueue.size(),
+            putqueuesize=self.putqueue.qsize(),
             addedcount=self.addedcount
             )
         return s
