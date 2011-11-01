@@ -3,11 +3,8 @@ import mmap
 import cjson
 import logging
 import time
-import weakref
+from gzip import GzipFile
 
-# for use with weak refs
-class curi(dict):
-    pass
 class SortedQueue(object):
     def __init__(self, qfile, urikey, cacheobj=True):
         self.fn = qfile
@@ -16,10 +13,17 @@ class SortedQueue(object):
         fd = os.open(self.fn, os.O_RDONLY)
         self.map = mmap.mmap(fd, 0, access=mmap.ACCESS_READ)
         os.close(fd)
-        self.build_sorted_index()
-
-    def build_sorted_index(self):
         logging.debug('scanning %s', self.fn)
+        if self.map[0:2] == '\x1f\x8b':
+            self.cacheobj = True
+            self.build_index_gzip()
+        else:
+            self.build_index_regular()
+        self.sort_index()
+        self.itemcount = len(self.index)
+        self.dupcount = 0
+
+    def build_index_regular(self):
         self.index = []
         p = 0
         while p < self.map.size():
@@ -42,16 +46,41 @@ class SortedQueue(object):
                 # difference in performance (just several secs per file,
                 # within normal variance)
                 if self.cacheobj:
-                    self.index.append((key, p, o))
+                    self.index.append((key, o))
                 else:
                     self.index.append((key, p))
             p = el + 1
+
+    def sort_index(self):
         logging.debug('sorting %d entries in %s', len(self.index), self.fn)
         self.index.sort(lambda x, y: cmp(x[0], y[0]), reverse=True)
         logging.debug('sorting done')
-        self.itemcount = len(self.index)
-        self.dupcount = 0
 
+    def build_index_gzip(self):
+        """creates sorted index from gzip-compressed queue.
+        caches object regardless of caccheobj flag.
+        """
+        self.index = []
+        zf = GzipFile(fileobj=self.map, mode='rb')
+        while 1:
+            p = zf.tell() # just for diagnosis use
+            l = zf.readline()
+            if not l: break
+            if l[0] != ' ': continue
+            try:
+                o = cjson.decode(l[1:])
+            except Exception as ex:
+                logging.warn("skipping malformed JSON at %s:%d: %s",
+                             self.fn, p, l[1:])
+                continue
+            key = o.get('id')
+            if key is None:
+                key = self.urikey(o)
+                if key is None:
+                    raise ValueError('urikey->None for %s' % str(o))
+            self.index.append((key, o))
+        zf.close()
+            
     def close(self):
         if self.map:
             self.map.close()
@@ -85,8 +114,9 @@ class SortedQueue(object):
             a = self.index.pop()
             # if not self.noupdate:
             #     self.map[a[1]] = '#'
-            o = a[2] if len(a) > 2 else None
-            if o is None:
+            if self.cacheobj:
+                o = a[1]
+            else:
                 el = self.map.find('\n', a[1] + 1)
                 if el < 0: el = self.map.size()
                 l = self.map[a[1] + 1:el]

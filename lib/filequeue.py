@@ -6,6 +6,7 @@ import cjson
 import mmap
 import logging
 from cStringIO import StringIO
+from gzip import GzipFile
 
 EMPTY_PAUSE = 15.0
 
@@ -28,7 +29,8 @@ class FileEnqueue(object):
     def __init__(self, qdir, suffix=None,
                  maxsize=1000*1000*1000, # 1GB
                  opener=None,
-                 buffer=0, executor=None):
+                 buffer=0, executor=None,
+                 gzip=9):
         self.qdir = qdir
         self.opener = opener
 
@@ -48,6 +50,8 @@ class FileEnqueue(object):
         self.filename = None
 
         self.executor = executor
+        self.gzip = gzip
+        self.__size = None
 
     WRITE_BUFSIZE = 50000
 
@@ -105,10 +109,12 @@ class FileEnqueue(object):
             self.starttime = time.time()
             self.filename = str(int(self.starttime))
             if self.suffix: self.filename += ('_%s' % self.suffix)
+            if self.gzip > 0: self.filename += ".gz"
             self.openfilename = self.filename + '.open'
             self._open(self.openfilename)
             self.closed.clear()
             self.opened.set()
+            self.__size = 0
         else:
             # simply re-open the .open file
             self._open(self.openfilename)
@@ -139,6 +145,7 @@ class FileEnqueue(object):
                               os.path.join(self.qdir, self.filename))
                     self.filename = None
                     self.openfilename = None
+                    self.__size = None
                     # leave self.starttime - it is used by monitor()
                 return True
             finally:
@@ -160,7 +167,14 @@ class FileEnqueue(object):
                 b.write('\n')
             t0 = time.time(); s0 = self.size()
             data = b.getvalue()
-            self.file.write(data)
+            if self.gzip > 0:
+                z = GzipFile(fileobj=self.file, mode='wb')
+                z.write(data)
+                z.close()
+                self.__size += len(data)
+            else:
+                self.file.write(data)
+                self.__size = self.file.tell()
             t = time.time() - t0
             if t > 0.0 and len(data)/t < 1000000: # 1MB/s
                 logging.warn('SLOW write: %dB, %.4fs', len(data), t)
@@ -216,7 +230,8 @@ class FileEnqueue(object):
         return time.time() - self.starttime
 
     def size(self):
-        return self.file.tell()
+        #return self.file.tell()
+        return self.__size
 
 class QueueFileReader(object):
     '''reads (dequeues) from single queue file'''
@@ -231,15 +246,20 @@ class QueueFileReader(object):
         # mmap dups fd. fd need not be kept open.
         os.close(fd)
         self.pos = 0
+        if self.map[0:2] == '\x1f\x8b':
+            self.z = GzipFile(fileobj=self.map, mode='rb')
+            self.__next = self.__next_gzip
+        else:
+            self.z = None
+            self.__next = self.__next_mmap
     def close(self):
+        if self.z:
+            self.z.close()
+            self.z = None
         if self.map:
             self.map.close()
             self.map = None
-    def next(self):
-        if self.map is None:
-            logging.warn("QueueFileReader:next called on closed file:%s",
-                         self.fn)
-            raise StopIteration
+    def __next_mmap(self):
         while self.pos < self.map.size():
             el = self.map.find('\n', self.pos + 1)
             if el < 0: el = self.map.size()
@@ -256,6 +276,25 @@ class QueueFileReader(object):
                                  s, l)
                     continue
         raise StopIteration
+
+    def __next_gzip(self):
+        while 1:
+            l = self.z.readline()
+            if l == '': break
+            if l[0] != ' ': continue
+            try:
+                return cjson.decode(l[1:])
+            except Exception as ex:
+                logging.warn('malformed line in %s at %d: %s', self.fn, s, l)
+                continue
+        raise StopIteration
+                             
+    def next(self):
+        if self.map is None:
+            logging.warn("QueueFileReader:next called on closed file:%s",
+                         self.fn)
+            raise StopIteration
+        return self.__next()
 
 class FileDequeue(object):
     '''multi-queue file reader'''
@@ -380,6 +419,19 @@ class FileDequeue(object):
                 if not self.next_rqfile(timeout):
                     return None
 
+class DummyFileEnqueue(FileEnqueue):
+    """class compatible with FileEnqueue, but has no actual 'enqueue'
+    functionality (raises error when performed). only implements
+    those methods used by Scheduler."""
+    def __init__(self, qdir, **kwds):
+        super(DummyFileDequeue, self).__init__(qdir)
+    def _flush(self):
+        pass
+    def close(self):
+        pass
+    def queue(self, curi):
+        raise NotImplementedError, 'dummy - curi lost: %s' % curi
+    
 class DummyFileDequeue(FileDequeue):
     """class compatible with FileDequeue, but has no actual 'dequeue'
     functionality. It's used for providing statistics.
