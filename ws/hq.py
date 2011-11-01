@@ -37,8 +37,6 @@ from seen import Seen
 
 logging.basicConfig(level=logging.WARN)
 
-HQ_HOME = '/1/crawling/hq'
-
 urls = (
     '/(.*)/(.*)', 'ClientAPI',
     )
@@ -163,7 +161,6 @@ class CrawlJob(object):
         # seen-db initialization is delayed until it's actually needed
         self.seen = None
         #self.seen = Seen(dbdir=os.path.join(HQ_HOME, 'seen', self.jobname))
-        #self.crawlinfodb = MongoCrawlInfo(self.jobname)
         self.crawlinfodb = crawlinfo
         self.domaininfo = domaininfo
         self.scheduler = Scheduler(hqconfig.worksetdir(self.jobname),
@@ -241,8 +238,15 @@ class CrawlJob(object):
         actual number of URIs processed may exceed it if incoming queue
         stores URIs in chunks.'''
         # lazy initialization of seen db
+        
         if not self.seen:
-            self.seen = Seen(dbdir=hqconfig.seendir(self.jobname))
+            try:
+                cachesize = hqconfig.get('seencache')
+                if cachesize: cachesize = int(cachesize)*(1024**2)
+            except:
+                cachesize = None
+            self.seen = Seen(dbdir=hqconfig.seendir(self.jobname),
+                             block_cache_size=cachesize)
         result = dict(processed=0, scheduled=0, excluded=0, td=0.0, ts=0.0)
         for count in xrange(maxn):
             t0 = time.time()
