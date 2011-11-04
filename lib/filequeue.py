@@ -279,13 +279,19 @@ class QueueFileReader(object):
 
     def __next_gzip(self):
         while 1:
-            l = self.z.readline()
+            try:
+                l = self.z.readline()
+            except IOError as ex:
+                # probably CRC error due to truncated file. discard the rest.
+                # should we keep the file for later diagnosis?
+                logging.error('error in %s: %s', self.fn, str(ex))
+                raise StopIteration
             if l == '': break
             if l[0] != ' ': continue
             try:
                 return cjson.decode(l[1:])
             except Exception as ex:
-                logging.warn('malformed line in %s at %d: %s', self.fn, s, l)
+                logging.warn('malformed line in %s: %s', self.fn, l)
                 continue
         raise StopIteration
                              
