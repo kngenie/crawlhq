@@ -182,11 +182,11 @@ class CrawlJob(object):
               ('save_crawlinfo', bool)]
 
     def shutdown(self):
+        logging.info("shutting down scheduler")
+        self.scheduler.shutdown()
         if self.seen:
             logging.info("closing seen db")
             self.seen.close()
-        logging.info("shutting down scheduler")
-        self.scheduler.shutdown()
         logging.info("closing incoming queues")
         self.inq.flush()
         self.inq.close()

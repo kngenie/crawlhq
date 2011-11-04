@@ -20,7 +20,7 @@ class WorkSet(object):
 
         if writing:
             FileEnqueue.recover(self.qdir)
-            self.enq = FileEnqueue(self.qdir, buffer=500)
+            self.enq = FileEnqueue(self.qdir, buffer=200)
         else:
             self.enq = DummyFileEnqueue(self.qdir)
         self.deq = FileDequeue(self.qdir)
@@ -211,10 +211,10 @@ class Scheduler(object):
                          for wsid in xrange(self.NWORKSETS)]
 
     def shutdown(self):
-        for clq in self.clients.values():
-            clq.shutdown()
         for ws in self.worksets:
             ws.shutdown()
+        for clq in self.clients.values():
+            clq.shutdown()
     
     def get_status(self):
         r = dict(
