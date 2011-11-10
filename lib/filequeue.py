@@ -55,6 +55,13 @@ class FileEnqueue(object):
 
     WRITE_BUFSIZE = 50000
 
+    @property
+    def buffered_count(self):
+        if self.buffer_size == 0:
+            return 0
+        else:
+            return len(self.buffer)
+            
     @staticmethod
     def recover(qdir):
         """fixes qfiles left open in qdir. this method is static
@@ -141,8 +148,16 @@ class FileEnqueue(object):
                     self.closed.set()
                     logging.debug("renaming %s/%s to %s", self.qdir,
                                   self.openfilename, self.filename)
-                    os.rename(os.path.join(self.qdir, self.openfilename),
-                              os.path.join(self.qdir, self.filename))
+                    try:
+                        os.rename(os.path.join(self.qdir, self.openfilename),
+                                  os.path.join(self.qdir, self.filename))
+                    except OSError as ex:
+                        if ex.errno == 2:
+                            logging.warn('failed to rename %s/%s to %s',
+                                         self.qdir, self.openfilename,
+                                         self.filename)
+                        else:
+                            raise
                     self.filename = None
                     self.openfilename = None
                     self.__size = None
@@ -171,6 +186,7 @@ class FileEnqueue(object):
                 z = GzipFile(fileobj=self.file, mode='wb')
                 z.write(data)
                 z.close()
+                self.file.flush()
                 self.__size += len(data)
             else:
                 self.file.write(data)
@@ -412,7 +428,7 @@ class FileDequeue(object):
 
                 self.rqfile.close()
                 if not self.noupdate:
-                    with timelog('unlink %s' % self.rqfile.fn, warn=0.001):
+                    with timelog('unlink %s' % self.rqfile.fn, warn=0.01):
                         try:
                             os.unlink(self.rqfile.fn)
                         except:
@@ -444,7 +460,7 @@ class DummyFileDequeue(FileDequeue):
     """
     def __init__(self, qdir, **kwds):
         super(DummyFileDequeue, self).__init__(qdir)
-        self.lastscan = None
+        self.lastscan = 0
         
     def qfile_count(self):
         self.__update_rqfiles()
@@ -454,7 +470,7 @@ class DummyFileDequeue(FileDequeue):
         """extended so that those files remove on the filesystem
         are dropped from self.rqfiles as well"""
         self.rqfiles = []
-        supr(DummyFileDequeue, self).scan()
+        super(DummyFileDequeue, self).scan()
 
     def __update_rqfiles(self):
         try:
