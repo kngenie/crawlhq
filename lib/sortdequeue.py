@@ -64,7 +64,12 @@ class SortedQueue(object):
         zf = GzipFile(fileobj=self.map, mode='rb')
         while 1:
             p = zf.tell() # just for diagnosis use
-            l = zf.readline()
+            try:
+                l = zf.readline()
+            except IOError as ex:
+                # probably CRC error due to truncated file. discard the rest.
+                logging.error('error in %s at %d: %s', self.fn, p, str(ex))
+                break
             if not l: break
             if l[0] != ' ': continue
             try:
