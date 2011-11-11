@@ -13,9 +13,6 @@ import hqconfig
 from seen import Seen
 from filequeue import FileDequeue, FileEnqueue
 import sortdequeue
-from mongojobconfigs import JobConfigs
-from mongodomaininfo import DomainInfo
-from mongocrawlinfo import CrawlInfo
 import urihash
 from cfpgenerator import FPGenerator
 from scheduler import Scheduler
@@ -193,40 +190,158 @@ class CrawlJob(object):
         self.seen.flush()
         return self.scheduler.flush()
     
-class Dispatcher(object):
-    def __init__(self):
-        self.domaininfo = DomainInfo()
-        self.jobconfigs = JobConfigs()
+import ctypes, ctypes.util
+import select
+import fcntl
+import termios
+import struct
+import errno
+import array
 
-        self.jobs = {}
-        self.jobslock = threading.RLock()
+libc = ctypes.cdll.LoadLibrary(ctypes.util.find_library('libc'))
+
+class InqueueWatcher(threading.Thread):
+    def __init__(self):
+        super(InqueueWatcher, self).__init__()
+        self.daemon = True
+        self.in_fd = libc.inotify_init()
+        if self.in_fd < 0:
+            logging.error('inotify_init failed')
+        self.watches = {}
+
+    def __del__(self):
+        self.shutdown()
+        super(InqueueWatcher, self).__del__()
 
     def shutdown(self):
-        for job in self.jobs.values():
-            job.shutdown()
-        self.jobconfigs.shutdown()
-        self.domaininfo.shutdown()
+        self.running = False
 
-    def get_job(self, jobname, nocreate=True):
-        with self.jobslock:
-            job = self.jobs.get(jobname)
-            if job is None:
-                if nocreate and not self.jobconfigs.job_exists(jobname):
-                    raise ValueError('unknown job %s' % jobname)
-                job = self.jobs[jobname] = CrawlJob(
-                    self.jobconfigs, jobname, self.domaininfo)
-                #self.coordinator.publish_job(job)
-            return job
+    def run(self):
+        try:
+            self._poll = select.poll()
+            self._poll.register(self.in_fd, select.POLLIN)
+            self.loop()
+        except:
+            logging.error('self.loop error', exc_info=1)
+        finally:
+            print >>sys.stderr, "self.loop exited"
+            self._poll.unregister(self.in_fd)
+            os.close(self.in_fd)
+            for w in self.watches.values():
+                with w[1]:
+                    w[1].notify_all()
 
-    def flush_job(self, jobname):
-        """flushes URIs buffered in worksets"""
-        return self.get_job(jobname, nocreate=True).flush()
+    def process_events(self):
+        # structure of fixed length part of inotify_event struct
+        fmt = 'iIII'
+        ssize = struct.calcsize(fmt)
+        # each event record must be read with one os.read() call.
+        # so you cannot do "read the first 16 byte, then name_len
+        # more bytes"
+        #b = os.read(self.in_fd, struct.calcsize(fmt))
+        #b = os.read(self.in_fd, 16)
+        buf = array.array('i', [0])
+        if fcntl.ioctl(self.in_fd, termios.FIONREAD, buf, 1) < 0:
+            return
+        rlen = buf[0]
+        try:
+            b = os.read(self.in_fd, rlen)
+        except:
+            logging.warn('read on in_fd failed', exc_info=1)
+            return
+        while b:
+            wd, mask, cookie, name_len = struct.unpack(fmt, b[:ssize])
+            name = b[ssize:ssize + name_len]
+            b = b[ssize + name_len:]
+            # notify Condition corresponding to wd
+            if (mask & 0x80) == 0x80:
+                logging.info('new queue file %s' % name)
+                for w in self.watches.values():
+                    if w[0] == wd:
+                        with w[1]:
+                            w[1].notify()
 
-    def processinq(self, job, maxn):
+    def loop(self):
+        self.running = True
+        while self.running:
+            # poll with timeout for checking self.running
+            try:
+                r = self._poll.poll(500)
+            except select.error as ex:
+                if ex[0] == errno.EINTR:
+                    # nofity all conditions so that waiting clients
+                    # wake up and (probably) exit
+                    # (this is ineffective since only main thread
+                    # receives INT signal)
+                    for w in self.watches.values():
+                        with w[1]:
+                            w[1].notify_all()
+                else:
+                    logging.error('poll failed', exc_info=1)
+                continue
+            if r and r[0][1] & select.POLLIN:
+                self.process_events()
+    def addwatch(self, path):
+        if path in self.watches:
+            return self.watches[path][1]
+        mask = 0x80 # IN_MOVED_TO
+        wd = libc.inotify_add_watch(self.in_fd, path, mask)
+        c = threading.Condition()
+        self.watches[path] = [wd, c, False]
+        return c
+
+    def delwatch(self, path):
+        e = self.watches[path]
+        s = libc.inotity_rm_watch(self.in_fd, e[0])
+        if s < 0:
+            logging.warn('failed to remove watch on %s(wd=%d)', path, e[0])
+        else:
+            with e[1]:
+                e[2] = True
+                e[1].notify_all()
+            del self.watches[path]
+        
+    def available(self, path, timeout=None):
+        e = self.watches[path]
+        with e[1]:
+            e[2] = False
+            e[1].wait(timeout)
+            return e[2]
+
+class Dispatcher(object):
+    inqwatcher = None
+
+    # TODO: absorb CrawlJob above.
+    def __init__(self, jobconfigs, domaininfo, job):
+        self.domaininfo = domaininfo
+        self.jobconfigs = jobconfigs
+        self.jobname = job
+        if not self.jobconfigs.job_exists(self.jobname):
+            raise ValueError('unknown job %s' % self.jobname)
+        self.job = CrawlJob(self.jobconfigs, self.jobname, self.domaininfo)
+        if Dispatcher.inqwatcher is None:
+            iqw = Dispatcher.inqwatcher = InqueueWatcher()
+            iqw.start()
+        self.watch = iqw.addwatch(hqconfig.inqdir(self.jobname))
+
+    def shutdown(self):
+        if self.job: self.job.shutdown()
+
+    def flush(self):
+        """flushes URIs buffered in workset objects"""
+        return self.job.flush()
+
+    def processinq(self, maxn):
         t = time.time()
-        r = self.get_job(job).processinq(maxn)
-        r.update(job=job, t=(time.time() - t))
+        r = self.job.processinq(maxn)
+        r.update(job=self.jobname, t=(time.time() - t))
         return r
+
+    def wait_available(self, timeout=None):
+        with self.watch:
+            self.__available = False
+            self.watch.wait(timeout)
+            return self.__available
 
 # TODO move this class to ws directory
 class DispatcherAPI(weblib.QueryApp):

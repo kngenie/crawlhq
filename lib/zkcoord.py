@@ -1,58 +1,111 @@
 import sys, os
 import re
 import zookeeper as zk
+import logging
+
+__all__ = ['Coordinator']
 
 NODE_HQ_ROOT = '/hq'
-NODE_SERVERS = NODE_HQ_ROOT+'/servers'
 
 PERM_WORLD = [dict(perms=zk.PERM_ALL,scheme='world',id='anyone')]
 
+# this has global effect
+zk.set_debug_level(zk.LOG_LEVEL_WARN)
+
+def create_flags(s):
+    """convert textual node creation flags into numerical value for API."""
+    f = 0
+    for c in s:
+        if c == 'e': f |= zk.EPHEMERAL
+        if c == 's': f |= zk.SEQUENCE
+    return f
+    
 class Coordinator(object):
-    def __init__(self, zkhosts):
+    def __init__(self, zkhosts, root=NODE_HQ_ROOT, alivenode='alive'):
+        """zkhosts: a string or a list. list will be ','.join-ed into a string.
+        root: root node path (any parents must exist, if any)
+        """
+        
         if not isinstance(zkhosts, basestring):
             zkhosts = ','.join(zkhosts)
+        self.ROOT = root
+        self.alivenode = alivenode
         self.nodename = os.uname()[1]
-        self.zh = zk.init(zkhosts)
 
-        if not zk.exists(self.zh, NODE_HQ_ROOT):
-            zk.create(self.zh, NODE_HQ_ROOT, '', PERM_WORLD)
-        # TODO: setup notification
-        if not zk.exists(self.zh, NODE_SERVERS):
-            zk.create(self.zh, NODE_SERVERS, '', PERM_WORLD)
+        self.NODE_SERVERS = self.ROOT + '/servers'
+        self.NODE_ME = self.NODE_SERVERS+'/'+self.nodename
 
-        self.node_me = NODE_SERVERS+'/'+self.nodename
-        if not zk.exists(self.zh, self.node_me):
-            zk.create(self.zh, self.node_me, '', PERM_WORLD)
+        self.zh = zk.init(zkhosts, self.__watcher)
 
-        self.node_jobs = self.node_me+'/jobs'
-        zk.acreate(self.zh, self.node_jobs, '', PERM_WORLD)
+        self.initialize_node_structure()
 
-        self.publish_alive()
+        if not zk.exists(self.zh, self.NODE_ME):
+            zk.create(self.zh, self.NODE_ME, '', PERM_WORLD)
 
+        # setup notification
+        zk.get_children(self.zh, self.NODE_SERVERS, self.__servers_watcher)
+        #zk.get_children(self.zh, self.NODE_ME, self.__watcher)
+
+        self.NODE_JOBS = self.NODE_ME+'/jobs'
+        zk.acreate(self.zh, self.NODE_JOBS, '', PERM_WORLD)
+
+        #self.publish_alive()
+
+    def create(self, path, data='', perm=PERM_WORLD, flags=''):
+        return zk.create(self.zh, path, data, perm, create_flags(flags))
+    def acreate(self, path, data='', perm=PERM_WORLD, flags=''):
+        return zk.acreate(self.zh, path, data, perm, create_flags(flags))
+
+    def initialize_node_structure(self):
+        if not zk.exists(self.zh, self.ROOT):
+            self.create(self.ROOT)
+
+        if not zk.exists(self.zh, self.NODE_SERVERS):
+            self.create(self.NODE_SERVERS)
+
+        self.NODE_GJOBS = self.ROOT + '/jobs'
+        if not zk.exists(self.zh, self.NODE_GJOBS):
+            self.create(self.NODE_GJOBS)
+        
+    def __watcher(self, zh, evtype, state, path):
+        """connection/session watcher"""
+        logging.debug('event%s', str((evtype, state, path)))
+        if evtype == zk.SESSION_EVENT and state == zk.CONNECTED_STATE:
+            self.publish_alive()
+
+    def __servers_watcher(self, zh, evtype, state, path):
+        ch = zk.get_children(self.zh, self.NODE_SERVERS, self.__servers_watcher)
+        logging.info('servers added/removed:%s', str(ch))
+        
     def publish_alive(self):
-        node_alive = self.node_me+'/alive'
-        zk.acreate(self.zh, node_alive, '', PERM_WORLD, zk.EPHEMERAL)
+        node_alive = self.NODE_ME+'/'+self.alivenode
+        self.acreate(node_alive, flags='e')
 
     def publish_job(self, job):
         '''job: hq.CrawlJob'''
-        node = self.node_jobs+'/'+job.jobname
+        node = self.NODE_JOBS+'/'+job.jobname
         zk.acreate(self.zh, node, '', PERM_WORLD)
+
+        node = self.NODE_GJOBS+'/'+job.jobname
+        self.acreate(node)
+        self.acreate('/'.join((self.NODE_GJOBS, job.jobname, self.nodename)),
+                     flags='e')
 
     def publish_client(self, job, client):
         pass
     
     def get_servers(self):
-        return zk.get_children(self.zh, NODE_SERVERS)
+        return zk.get_children(self.zh, self.NODE_SERVERS)
 
     def get_status_of(self, server):
         status = dict(name=server)
         try:
-            node = zk.get(self.zh, NODE_SERVERS+'/'+server+'/alive')
+            node = zk.get(self.zh, self.NODE_SERVERS+'/'+server+'/alive')
             status['alive'] = node[1]
         except zk.NoNodeException:
             pass
         try:
-            jobs = zk.get_children(self.zh, NODE_SERVERS+'/'+server+'/jobs')
+            jobs = zk.get_children(self.zh, self.NODE_SERVERS+'/'+server+'/jobs')
             status['jobs'] = [dict(name=j) for j in jobs]
         except zk.NoNodeException:
             status['jobs'] = null;
