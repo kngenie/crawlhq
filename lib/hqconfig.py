@@ -2,6 +2,8 @@
 import os
 from configobj import ConfigObj
 
+from mongojobconfigs import JobConfigs
+
 HQ_HOME = '/1/crawling/hq'
 
 INQDIR = os.path.join(HQ_HOME, 'inq')
