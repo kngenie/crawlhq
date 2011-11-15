@@ -63,7 +63,7 @@ class Headquarters(object):
             if job is None:
                 job = self.jobs[jobname] = CrawlJob(
                     self.jobconfigs.get_job(jobname))
-                self.coordinator.publish_job(job)
+                #self.coordinator.publish_job(job)
             return job
 
 hq = Headquarters()
@@ -177,6 +177,11 @@ class DiscoveredHandler(object):
         '''flushes cached objects into database for safe shutdown'''
         hq.get_job(job).flush()
         r = dict(ok=1)
+        return r
+
+    def do_testinq(self, job):
+        """test method for checking if URL mapping is configured correctly."""
+        r = dict(ok=1, job=job, pid=os.getpid())
         return r
             
 logging.basicConfig(level=logging.WARN)
