@@ -1,336 +1,150 @@
 #!/usr/bin/python
+# stand-alone (non-webapp) version of seenchecker-scheduler.
 #
 import sys, os
-sys.path[0:0] = (os.path.join(sys.path[0], '../lib'),)
+sys.path[0:0] = (os.path.join(os.path.dirname(__file__), '../lib'),)
 import re
-from pymongo import Connection
 from optparse import OptionParser
-from Queue import Queue, Empty
 from threading import Thread, Condition, RLock
-from cfpgenerator import FPGenerator
 import time
 import traceback
-from fileinq import IncomingQueue
+import logging
+import signal
+import pymongo
+try:
+    import tornado.ioloop
+    import tornado.web
+except:
+    tornado = None
+
+import hqconfig
+from mongojobconfigs import JobConfigs
+from mongodomaininfo import DomainInfo
+from dispatcher import Dispatcher
+
+DEFAULT_BINDADDR = ('127.0.0.1', 8819)
+
+# if tornado:
+#     class API(tornado.web.RequestHandler):
+        
+def interrupted(sig, frame):
+    global repeat
+    print >>sys.stderr, "Interrupted, exiting..."
+    repeat = False
 
 opt = OptionParser(usage='%prog [OPTIONS] JOBNAME')
-opt.add_option('-d', action='store', dest='dbspec', default='localhost/crawl',
-               help='database specification: host[:port][/db]')
+opt.add_option('-n', action='store', dest='maxn', default=500, type='int',
+               help='maximum number of URLs to process (advisory)')
+opt.add_option('-1', action='store_true', dest='justonce', default=False,
+               help="runs processinq just once, then exists"
+               )
+opt.add_option('-w', action='store', dest='exhaust_delay', default=60,
+               type='int',
+               help='seconds to wait between processing when queue '
+               'got exhausted')
+opt.add_option('-L', action='store', dest='listen',
+               default=('%s:%d' % DEFAULT_BINDADDR),
+               help='address:port to bind HTTP API end-point to. '
+               'specify "none" to disable HTTP API')
 opt.add_option('-v', action='store_true', dest='verbose', default=False,
                help='print out extra information')
-opt.add_option('--test', action='store_true', dest='dryrun', default=False,
-               help='disallow any updates to the database')
-opt.add_option('--ts', action='store', dest='threads_seen', default=3,
-               type='int')
-opt.add_option('--tu', action='store', dest='threads_update', default=2,
-               type='int')
 options, args = opt.parse_args()
 
-m = re.match(r'([^:]+(?::\d+))?(?:/(.+))?', options.dbspec)
-if not m:
-    print >>sys.stderr, "invalid dbspec '%s'" % options.dbspec
-    opt.print_usage()
-    exit(1)
-host = m.group(1)
-dbname = m.group(2) or 'crawl'
+logging.basicConfig(level=(logging.DEBUG if options.verbose else logging.INFO),
+                    format='%(asctime)s %(levelname)s %(message)s',
+                    datefmt='%Y-%m-%d %H:%M:%S')
+
+listen = options.listen
+if listen == 'none':
+    hostport = None
+else:
+    hostport = listen.split(':', 1)
+    if len(hostport) == 1: hostport.append(DEFAULT_BINDADDR[1])
+    if hostport[0] == '': hostport[0] = DEFAULT_BINDADDR[0]
+    hostport[1] = int(hostport[1])
+
 if len(args) < 1:
-    print >>sys.stderr, "JOBNAME is missing"
-    opt.print_usage()
-    exit(1)
+    opt.error('JOBNAME is missing')
+job, = args
 
-job = args[0]
+repeat = not options.justonce
+do_flush = False
 
-conn = Connection(host=host)
-db = conn[dbname]
-inq = db.inq[job]
-seen = db.seen
+mongo = pymongo.Connection(hqconfig.get('mongo'))
+domaininfo = DomainInfo(mongo.crawl)
+jobconfigs = JobConfigs(mongo.crawl)
+dispatcher = Dispatcher(jobconfigs, domaininfo, job)
 
-_fp12 = FPGenerator(0xE758000000000000, 12)
-_fp31 = FPGenerator(0xBA75BB4300000000, 31)
-_fp32 = FPGenerator(0x9B6C9A2F80000000, 32)
-_fp63 = FPGenerator(0xE1F8D6B3195D6D97, 63)
-_fp64 = FPGenerator(0xD74307D3FD3382DB, 64)
-
-class seen_ud(object):
-    # split long URL, use fp for the tail (0.02-0.04s/80URIs)
-    def longkeyhash32(self, s):
-        return ("#%x" % (_fp32.fp(s) >> 32))
-    def hosthash(self, h):
-        # mongodb can only handle upto 64bit signed int
-        #return (_fp63.fp(h) >> 1)
-        return int(_fp31.fp(h) >> 33)
-
-    def urlkey(self, url):
-        k = {}
-        # 790 < 800 - (32bit/4bit + 1)
-        if len(url) > 790:
-            u1, u2 = url[:790], url[790:]
-            k.update(u1=u1, u2=u2, h=self.longkeyhash32(u2))
-        else:
-            k.update(u1=url, h='')
-        return k
-    def keyurl(self, k):
-        return k['u1']+k['u2'] if 'u2' in k else k['u1']
-    def keyfp(self, k):
-        url = k['u1']
-        p1 = url.find('://')
-        if p1 > 0:
-            p2 = url.find('/', p1+3)
-            host = url[p1+3:p2] if p2 >= 0 else url[p1+3:]
-        else:
-            host = ''
-        return self.hosthash(host)
-    def keyhost(self, k):
-        return k['H']
-    # name is incorrect
-    def keyquery(self, k):
-        # in sharded environment, it is important to have shard key in
-        # a query. also it is necessary for non-multi update to work.
-        return {'fp':self.keyfp(k), 'u.u1':k['u1'], 'u.h':k['h']}
-    # old and incorrect name
-    uriquery = keyquery
-
-class Stat(object):
-    def __init__(self):
-        self.buckets = 0
-        self.processed = 0
-        self.scheduled = 0
-    
-class IterableQueue(Queue):
-    '''Queue wrapped as iterable'''
-    def __init__(self, capacity=0):
-        Queue.__init__(self, capacity)
-        # to prevent premature stop, active counter starts with 1
-        self.__active = 1
-    def start(self):
-        self.__active += 1
-    def stop(self):
-        self.__active -= 1
-        if self.__active == 1:
-            self.__active = 0
-    def __iter__(self):
-        return self
-    def next(self):
-        while self.__active > 0:
+if hostport and tornado:
+    # TODO
+    class APIHandler(tornado.web.RequestHandler):
+        def initialize(self, dispatcher):
+            self.dispatcher = dispatcher
+        def get(self, a):
+            h = getattr(self, 'get_'+a, None)
+            if not h:
+                self.send_error(404, msg=('undefined action %s' % a))
+                return
             try:
-                return self.get(timeout=0.5)
-            except Empty:
-                pass
-        raise StopIteration
+                h()
+            except Exception as ex:
+                self.write(dict(success=0, error=str(ex)))
+            self.finish()
+        def write_error(self, msg=''):
+            self.write(dict(success=0, error=msg))
 
-class Scheduler(seen_ud, Thread):
-    NWORKSETS_BITS = 8
+        def get_flush(self):
+            job = self.get_argument('job')
+            self.write(dict(success=1, r=self.dispatcher.flush_job(job)))
+        def get_clearseen(self):
+            job = self.get_argument('job')
+            self.write(dict(success=1,
+                            r=self.dispatcher.get_job(job).seen.clear()))
+        def get_status(self):
+            job = self.get_argument('job')
+            self.write(dict(success=1,
+                            r=self.dispatcher.get_job(job).get_status()))
 
-    def __init__(self, curi_iter, stat):
-        Thread.__init__(self, name='Scheduler')
-        self.curi_iter = curi_iter
-        self.stat = stat
+    application = tornado.web.Application([
+            (r'/(.*)', APIHandler, {'dispatcher':dispatcher}),
+            ])
+    application.listen(hostport[1], address=hostport[0])
+    appth = Thread(target=tornado.ioloop.IOLoop.instance().start)
+    appth.setDaemon(True)
+    appth.start()
 
-    def workset(self, fp):
-        return fp >> (31 - self.NWORKSETS_BITS)
-
-    def schedule(self, curi):
-        ws = self.workset(curi['fp'])
-        curi['ws'] = ws
-        curi['co'] = 0
-        if options.verbose:
-            print >>sys.stderr, "  SCHEDULE %s" % curi
-        if options.dryrun:
-            self.stat.scheduled += 1
-            return
-        if '_id' in curi:
-            t0 = time.time()
-            seen.update({'_id': curi['_id'], 'fp': curi['fp']},
-                        {'$set':{'ws': curi['ws'],
-                                 'co': curi['co'],
-                                 'w': curi['w']}},
-                        upsert=False, multi=False)
-            t = time.time() - t0
-            if t > 0.1:
-                print >>sys.stderr, "seen.update %d %.3f" % (curi['fp'], t)
-        else:
-            t0 = time.time()
-            seen.insert(curi)
-            t = time.time() - t0
-            if t > 0.1:
-                print >>sys.stderr, "seen.insert %d %.3f" % (curi['fp'], t)
-        self.stat.scheduled += 1
-
-    def run(self):
-        try:
-            for curi in self.curi_iter:
-                self.schedule(curi)
-                db.connection.end_request()
-        except:
-            traceback.print_exc()
-        print >>sys.stderr, "%s terminating" % str(self)
-
-class SeenChecker(seen_ud, Thread):
-    def __init__(self, duri_iter, stat, outqueue):
-        Thread.__init__(self, name='SeenChecker')
-        self.queue = outqueue
-        self.duri_iter = duri_iter
-        self.stat = stat
-        self.queue.start()
-
-    def schedule(self, curi):
-        self.queue.put(curi)
-
-    def schedule_unseen(self, duri):
-        url = duri['u']
-        uk = self.urlkey(url)
-        q = self.keyquery(uk)
-        t0 = time.time()
-        curi = seen.find_one(q)
-        t = time.time() - t0
-        if t > 0.1:
-            print >>sys.stderr, "seen.find_one %d %.3f" % (q['fp'], t)
-        if curi is None:
-            curi = dict(u=uk, fp=q['fp'])
-            curi['w'] = dict(p=duri.get('p'), v=duri.get('v'),
-                             x=duri.get('x'))
-            self.schedule(curi)
-            return True
-        else:
-            if 'w' in curi: return False
-            if curi.get('e', sys.maxint) < time.time():
-                curi['w'] = dict(p=duri.get('p'), v=duri.get('v'),
-                                 x=duri.get('x'))
-                self.schedule(curi)
-                return True
-            return False
-
-    def run(self):
-        try:
-            for duri in self.duri_iter:
-                self.schedule_unseen(duri)
-                db.connection.end_request()
-                self.stat.processed += 1
-        except:
-            traceback.print_exc()
-        finally:
-            self.queue.stop()
-            print >>sys.stderr, "%s terminating" % str(self)
-                
-        
-class FileQueueReader(object):
-    '''read DURI from file-based IncomingQueue in a thread-safe way'''
-    def __init__(self, job, stat):
-        self.stat = stat
-        self.__stop = False
-        self.inq = IncomingQueue(job, None)
-        self.inqlock = RLock()
-    def start(self):
-        pass
-    def stop(self):
-        self.__stop = True
-    def qsize(self):
-        '''just for compatibility with BucketReader.queue'''
-        return len(self.inq.rqfiles)
-    def __iter__(self):
-        return self
-    def next(self):
-        while not self.__stop:
-            with self.inqlock:
-                duri = self.inq.get(1.0)
-            if duri:
-                if options.verbose:
-                    print >>sys.stderr, "%d %s" % (i, duri['u'])
-                return duri
-        raise StopIteration
-
-class BucketReader(Thread):
-    '''read in IncomingQueue buckets and dispense DURIs as iterator'''
-    def __init__(self, stat, qsize=2):
-        Thread.__init__(self, name='BucketReader')
-        self.stat = stat
-        self.queue = Queue(qsize)
-        self.__stop = False
-
-    def stop(self):
-        self.__stop = True
-
-    def __iter__(self):
-        while 1:
-            try:
-                bucket = self.queue.get(timeout=0.5)
-            except Empty:
-                if self.__stop: break
-                continue
-            self.stat.buckets += 1
-            oid = bucket['_id']
-            duris = bucket['d']
-            i = len(duris)
-            for duri in duris:
-                if options.verbose:
-                    print >>sys.stderr, "%d %s" % (i, duri['u'])
-                i -= 1
-                yield duri
-
-    def run(self):
-        try:
-            while not self.__stop:
-                cur = inq.find({'q':{'$gt':0}}).limit(100)
-                for bucket in cur:
-                    if bucket:
-                        self.queue.put(bucket)
-                    if not options.dryrun:
-                        inq.update({'_id': bucket['_id']}, {'$set':{'q': 0}})
-                    if self.__stop: break
-        except:
-            traceback.print_exc()
-        print >>sys.stderr, "%s terminating" % str(self)
-        
-class Reporter():
-    def __init__(self, stat, bucketqueue, schedulequeue):
-        self.stat = stat
-        self.bucketqueue = bucketqueue
-        self.schedulequeue = schedulequeue
-    def run(self):
-        t0 = time.time()
-        buckets0 = 0
-        processed0 = 0
-        scheduled0 = 0
-        while 1:
-            time.sleep(1.0)
-            t = time.time()
-            el = t - t0
-            buckets = self.stat.buckets
-            processed = self.stat.processed
-            scheduled = self.stat.scheduled
-            print >>sys.stderr, "buckets:%d | %d | processed:%d (%.2f/s) | %d | scheduled:%d (%.2f/s)" % (
-                buckets, self.bucketqueue.qsize(),
-                processed, (processed - processed0) / el,
-                self.schedulequeue.qsize(),
-                scheduled, (scheduled - scheduled0) / el
-                )
-            buckets0 = buckets
-            processed0 = processed
-            scheduled0 = scheduled
-            t0 = t
-
-threads = []
-def start(th):
-    th.start()
-    threads.append(th)
-
-stat = Stat()
-#bucketreader = BucketReader(stat, qsize=2)
-bucketreader = FileQueueReader(job, stat)
-schedulequeue = IterableQueue(200)
-for i in range(options.threads_seen):
-    seenchecker = SeenChecker(bucketreader, stat, schedulequeue)
-    start(seenchecker)
-for i in range(options.threads_update):
-    scheduler = Scheduler(schedulequeue, stat)
-    start(scheduler)
-#start(bucketreader)
-
-reporter = Reporter(stat, bucketreader, schedulequeue)
+signal.signal(signal.SIGINT, interrupted)
 try:
-    reporter.run()
-except KeyboardInterrupt:
-    print >>sys.stderr, "KeyboardInterrupt. stopping..."
+    while 1:
+        r = dispatcher.processinq(options.maxn)
+        r.update(
+            ps=r.get('processed', 0)/r['t'],
+            eps=r.get('scheduled', 0)/r['t']
+            )
+        print >>sys.stderr, "%(job)s %(scheduled)d/%(processed)d X:%(excluded)d T:%(t).3f(D%(td).3f,S%(ts).3f) %(eps)8.2f/%(ps)8.2f/s" % r
+        if not r.get('processed'):
+            # flush worksets before sleeping - this is not perfect,
+            # but better-than-nothing solution until we implement
+            # inter-process communication.
+            if do_flush:
+                dispatcher.flush()
+                do_flush = False
+            logging.info("inq exhausted, sleeping for %ds",
+                         options.exhaust_delay)
+            # because wait_available cannot be interrupted by INT signal,
+            # we repeat short waits for exhaust_delay.
+            #time.sleep(options.exhaust_delay)
+            until = time.time() + options.exhaust_delay
+            while time.time() < until and repeat:
+                if dispatcher.wait_available(1.0):
+                    break
+        else:
+            do_flush = (r.get('scheduled', 0) > 0)
+        if not repeat:
+            break
+finally:
+    dispatcher.shutdown()
+    jobconfigs.shutdown()
+    domaininfo.shutdown()
+    mongo.disconnect()
 
-bucketreader.stop()
-for th in threads:
-    th.join()
