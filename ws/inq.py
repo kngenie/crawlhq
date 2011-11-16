@@ -127,8 +127,6 @@ class DiscoveredHandler(object):
             return cj.discovered([furi])
 
     def post_mdiscovered(self, job):
-        web.debug(web.ctx.path)
-        web.debug(str(web.ctx.env))
         '''receives submission of "discovered" events in batch.
         this version simply queues data submitted in incoming queue
         to minimize response time. entries in the incoming queue
