@@ -361,7 +361,7 @@ class FileDequeue(object):
             ls = os.listdir(self.qdir)
         except Exception as ex:
             if isinstance(ex, OSError) and ex.errno == 2:
-                logging.debug("qdir %s does not exit yet", self.qdir)
+                logging.debug("qdir %s does not exist yet", self.qdir)
             else:
                 logging.error("listdir failed on %s", self.qdir, exc_info=1)
             return
@@ -387,7 +387,10 @@ class FileDequeue(object):
         while 1:
             if self.rqfiles:
                 f = self.rqfiles.pop(0)
-                qpath = os.path.join(self.qdir, f)
+                if f.startswith('/'):
+                    qpath = f
+                else:
+                    qpath = os.path.join(self.qdir, f)
                 logging.debug("opening %s", qpath)
                 with timelog('open %s' % qpath, warn=2.0):
                     try:

@@ -8,15 +8,10 @@ import sys, os
 import web
 from web.utils import Storage, storify
 import pymongo
-import bson
 import json
 import time
 import re
-import itertools
-#from cfpgenerator import FPGenerator
 from urlparse import urlsplit, urlunsplit
-import threading
-import random
 import atexit
 import logging
 
@@ -24,18 +19,10 @@ import urihash
 from weblib import BaseApp
 from mongocrawlinfo import CrawlInfo
 from zkcoord import Coordinator
-from configobj import ConfigObj
-
-# read config
-hqconfig = ConfigObj([
-        '[web]',
-        'debug=False'
-        ])
-localconfig = ConfigObj('/opt/hq/conf/hq.conf')
-hqconfig.merge(localconfig)
+import hqconfig
 
 try:
-    mongo = pymongo.Connection()
+    mongo = pymongo.Connection(hqconfig.get('mongo'))
     db = mongo.crawl
 except:
     mongo = None
@@ -116,9 +103,16 @@ class Query:
         except Exception as ex:
             return json.dumps(dict(success=0, err=str(ex)))
 
+    def do_test(self):
+        return json.dumps(dict(__file__=__file__, path=sys.path, env=str(web.ctx.env)))
+
 if __name__ == '__main__':
-    app.run()
+    logging.basicConfig(filename='/tmp/status.log', level=logging.INFO)
+    try:
+        app.run()
+    except Exception as ex:
+        logging.critical('app.run() terminated with error', exc_info=1)
 else:
     # for debugging
-    web.config.debug = hqconfig['web']['debug']
+    web.config.debug = hqconfig.get('web')['debug']
     application = app.wsgifunc()

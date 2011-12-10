@@ -27,15 +27,13 @@ from fileinq import IncomingQueue
 from filequeue import FileEnqueue, FileDequeue
 import sortdequeue
 from scheduler import Scheduler
-import leveldb
 from executor import *
 from zkcoord import Coordinator
 from mongodomaininfo import DomainInfo
 from mongocrawlinfo import CrawlInfo
 import urihash
 from seen import Seen
-
-logging.basicConfig(level=logging.WARN)
+from diverter import Diverter
 
 urls = (
     '/(.*)/(.*)', 'ClientAPI',
@@ -73,12 +71,15 @@ class MongoJobConfigs(object):
 
 class CrawlMapper(object):
     '''maps client queue id to set of WorkSets'''
-    def __init__(self, jobconfigs, job, nworksets_bits):
-        self.jobconfigs = jobconfigs
-        self.job = job
+    def __init__(self, crawljob, nworksets_bits):
+        self.crawljob = crawljob
+        self.jobconfigs = self.crawljob.jobconfigs
+        self.job = self.crawljob.jobname
         self.nworksets_bits = nworksets_bits
         self.nworksets = (1 << self.nworksets_bits)
         self.load_workset_assignment()
+
+        self.client_last_active = {}
 
     def create_default_workset_assignment(self):
         num_nodes = self.jobconfigs.get_jobconf(self.job, 'nodes', 20)
@@ -97,10 +98,11 @@ class CrawlMapper(object):
             wscl.extend(itertools.repeat(None, self.nworksets-len(wscl)))
         self.worksetclient = wscl
 
-    def wsidforclient(self, client):
+    def wsidforclient(self, clid):
         '''return list of workset ids for node name of nodes-node cluster'''
+        # XXX linear search
         qids = [i for i in xrange(len(self.worksetclient))
-                if self.worksetclient[i] == client[0]]
+                if self.worksetclient[i] == clid]
         return qids
 
     def workset(self, curi):
@@ -113,6 +115,12 @@ class CrawlMapper(object):
         # lower bits.
         hosthash = int(_fp31.fp(h) >> (64 - self.nworksets_bits))
         return hosthash
+
+    def client_activating(self, clid):
+        """called back by Scheduler when client gets a new feed request
+        when it is inactive."""
+        for wsid in self.wsidforclient(clid):
+            self.crawljob.workset_activating(wsid)
 
 def FPSortingQueueFileReader(qfile, **kwds):
     def urikey(o):
@@ -156,8 +164,9 @@ class CrawlJob(object):
     def __init__(self, jobconfigs, jobname, crawlinfo, domaininfo):
         self.jobconfigs = jobconfigs
         self.jobname = jobname
-        self.mapper = CrawlMapper(self.jobconfigs, self.jobname,
-                                  self.NWORKSETS_BITS)
+        self.mapper = CrawlMapper(self, self.NWORKSETS_BITS)
+        self.workset_state = [0 for i in range(self.mapper.nworksets)]
+
         # seen-db initialization is delayed until it's actually needed
         self.seen = None
         #self.seen = Seen(dbdir=os.path.join(HQ_HOME, 'seen', self.jobname))
@@ -172,6 +181,8 @@ class CrawlJob(object):
             qdir=hqconfig.inqdir(self.jobname),
             buffsize=1000)
 
+        self.diverter = Diverter(self.jobname, self.mapper)
+
         #self.discovered_executor = ThreadPoolExecutor(poolsize=1)
 
         # currently disabled by default - too slow
@@ -184,6 +195,8 @@ class CrawlJob(object):
     def shutdown(self):
         logging.info("shutting down scheduler")
         self.scheduler.shutdown()
+        logging.info("shutting down diverter")
+        self.diverter.shutdown()
         if self.seen:
             logging.info("closing seen db")
             self.seen.close()
@@ -232,13 +245,52 @@ class CrawlJob(object):
     def discovered(self, curis):
         return self.inq.add(curis)
         
+    def is_client_active(self, clid):
+        """is client clid active?"""
+        # TODO: update ZooKeeper when active status changes
+        #t = self.client_last_active.get(str(clid))
+        return self.scheduler.is_active(clid)
+
+    def is_workset_active(self, wsid):
+        """is workset wsid assigned to any active client?"""
+        clid = self.mapper.worksetclient[wsid]
+        return self.is_client_active(clid)
+
+    def workset_activating(self, wsid):
+        """activates working set wsid; start sending CURIs to Scheduler
+        and enqueue diverted CURIs back into incoming queue so that
+        processinq will process them (again). called by Scheduler,
+        through CrawlMapper, when client starts feeding.
+        note, unlike workset_deactivating, this method shall not be
+        called from inside processinq method below, because processinq
+        executes it only when at least one CURI is available for processing.
+        if inq is empty, CURIs in divert queues would never be enqueued back.
+        """
+        # this could be executed asynchronously
+        logging.info('workset %s activated', wsid)
+        self.workset_state[wsid] = 1
+        # is it better to move files back into inq directory?
+        qfiles = self.diverter.listqfiles(wsid)
+        logging.info('re-scheduling %s to inq', str(qfiles))
+        self.inq.rqfile.qfiles_available(qfiles)
+
+    def workset_deactivating(self, wsid):
+        """deactivates working set wsid; start sending CURIs into
+        divert queues."""
+        logging.info('workset %s deactivated', wsid)
+        self.workset_state[wsid] = 0
+        # flush Workset queues. we don't move qfiles to diverter yet.
+        # it will be done when other HQ server becomes active on the
+        # workset, and this HQ server starts forwarding CURIs.
+        self.scheduler.flush_workset(wsid)
+
     def processinq(self, maxn):
         '''process incoming queue. maxn paramter adivces
         upper limit on number of URIs processed in this single call.
         actual number of URIs processed may exceed it if incoming queue
         stores URIs in chunks.'''
+
         # lazy initialization of seen db
-        
         if not self.seen:
             try:
                 cachesize = hqconfig.get('seencache')
@@ -247,34 +299,44 @@ class CrawlJob(object):
                 cachesize = None
             self.seen = Seen(dbdir=hqconfig.seendir(self.jobname),
                              block_cache_size=cachesize)
-        result = dict(processed=0, scheduled=0, excluded=0, td=0.0, ts=0.0)
+
+        result = dict(processed=0, scheduled=0, excluded=0, saved=0,
+                      td=0.0, ts=0.0)
         for count in xrange(maxn):
             t0 = time.time()
             furi = self.inq.get(0.01)
             result['td'] += (time.time() - t0)
             if furi is None: break
             result['processed'] += 1
-            di = self.get_domaininfo(furi['u'])
-            if di and di['exclude']:
-                result['excluded'] += 1
-                continue
-            t0 = time.time()
-            suri = self.seen.already_seen(furi)
-            if suri['e'] < int(time.time()):
-                if 'w' in furi:
-                    w = furi['w']
-                else:
-                    w = dict()
-                    for k in ('p','v','x'):
-                        m = furi.get(k)
-                        if m is not None:
-                            w[k] = m
-                curi = dict(u=furi['u'], id=suri['_id'], w=w)
-                self.scheduler.schedule(curi)
-                result['scheduled'] += 1
-            result['ts'] += (time.time() - t0)
-        # currently no access to MongoDB
-        #self.mongo.end_request()
+            ws = self.mapper.workset(furi)
+            if self.is_workset_active(ws):
+                # no need to call self.workset_activating(). it's already
+                # done by Scheduler.
+                di = self.get_domaininfo(furi['u'])
+                if di and di['exclude']:
+                    result['excluded'] += 1
+                    continue
+                t0 = time.time()
+                suri = self.seen.already_seen(furi)
+                if suri['e'] < int(time.time()):
+                    if 'w' in furi:
+                        a = furi['w']
+                    else:
+                        a = dict()
+                        for k in ('p','v','x'):
+                            m = furi.get(k)
+                            if m is not None:
+                                a[k] = m
+                    curi = dict(u=furi['u'], id=suri['_id'], a=a)
+                    self.scheduler.schedule(curi, ws)
+                    result['scheduled'] += 1
+                result['ts'] += (time.time() - t0)
+            else:
+                if self.workset_state[ws]:
+                    self.workset_deactivating(ws)
+                # client is not active
+                self.diverter.divert(str(ws), furi)
+                result['saved'] += 1
         return result
 
     def makecuri(self, o):
@@ -543,7 +605,7 @@ class ClientAPI:
         name = int(p.name)
         nodes = int(p.nodes)
         count = int(p.n)
-        if count < 1: count = 5
+        if count < 1: count = 0
 
         start = time.time()
         # return an JSON array of objects with properties:
@@ -616,10 +678,8 @@ class ClientAPI:
 
     def do_test(self, job):
         web.debug(web.data())
-        return str(web.ctx.env)
-
-    def do_rehash(self, job):
-        return hq.rehash(job)
+        return "test\nweb.ctx.env="+str(web.ctx.env)+\
+            "\nweb.ctx.path="+web.ctx.path
 
     def do_repairseen(self, job):
         logging.info('repairing seen-db')
@@ -677,8 +737,18 @@ if __name__ == "__main__":
     # FastCGI/stand-alone. Under FastCGI exception in app.run() does not
     # appear in server error log.
     try:
+        logsdir = os.path.join(hqconfig.HQ_HOME, 'logs')
+        if not os.path.isdir(logsdir): os.makedirs(logsdir)
+        logging.basicConfig(
+            filename=os.path.join(logsdir, 'hq.log'),
+            level=logging.INFO,
+            format='%(asctime)s %(levelname)s %(name)s %(message)s',
+            datefmt='%F %T')
+        logging.info('starting hq')
         app.run()
     except Exception as ex:
         logging.critical('app.run() terminated with error', exc_info=1)
 else:
+    # WSGI
+    logging.basicConfig(level=logging.WARN)
     application = app.wsgifunc()

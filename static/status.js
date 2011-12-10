@@ -96,7 +96,7 @@ function renderstatus(resp, status, xhr) {
     inqdiv.append('IncomingQueue: ' + in_text + ', ' + out_text +
 		  ', ' + nq_text);
     last_status_update = now;
-    last_inq_in = inq.addedcount;					
+    last_inq_in = inq.addedcount;
     last_inq_out = inq.processedcount;
     d.append(inqdiv);
   }
@@ -108,19 +108,21 @@ function renderstatus(resp, status, xhr) {
       var tbl = jQuery('<table border="1">');
       var r = tbl.get(0).insertRow(-1);
       jQuery.each(['id','scheduled','fed','finished','next','worksets',
-		   'lastfed','nqfiles'],
+		   'lastfed','lastfed_t','nqfiles'],
              function(i, s){ jQuery(r.insertCell(-1)).text(s); });
       jQuery.each(clients, function(k, v){
           r = tbl.get(0).insertRow(-1);
           jQuery(r).addClass('client');
           jQuery(r.insertCell(-1)).text(k).attr({align:'right'});
-          jQuery.each(['scheduledcount','feedcount','finishedcount','next','worksetcount','lastfeedcount','qfilecount'],
+          jQuery.each(['scheduledcount','feedcount','finishedcount','next','worksetcount','lastfeedcount','lastfeedtime','qfilecount'],
 		function(i, p){
 		    if (v[p] == null)
 		        v[p] = '-';
-		    else if (p.match('count$$'))
+		    else if (p.match('count$'))
 			v[p] = with_comma(v[p]);
-		    jQuery(r.insertCell(-1)).text(v[p]).attr({align:'right'});
+		    else if (p.match('time$'))
+		        v[p] = timedelta(v[p]);
+		    jQuery(r.insertCell(-1)).html(v[p]).attr({align:'right'});
 		});
         });
       d.append(tbl);
@@ -146,7 +148,28 @@ function with_comma(n) {
   for (var i = digits.length - 3; i > 0; i -= 3) {
     digits.splice(i, 0, ',');
   }
-  return digits.join('');  
+  return digits.join('');
+}
+function timedelta(t) {
+  if (t == null || typeof(t) == 'undefined') return '-';
+  var d = Math.floor(t * 1000 - Date.now());
+  var s = '';
+  if (d < 0) {
+    d = Math.abs(d);
+    s = '-';
+  }
+  var ms = d % 1000;
+  d = Math.floor(d / 1000);
+  var r = (d % 60)+'<span class="tsp">s</span>'+ms+'<span class="tsp">ms</span>';
+  d = Math.floor(d / 60);
+  if (d > 0) {
+    r = ((d % 60) + '<span class="tsp">m</span>') + r;
+    d = Math.floor(d / 60);
+    if (d > 0) {
+      r = d + '<span class="tsp">h</span>' + r;
+    }
+  }
+  return s+r;
 }
 function update_seencount() {
   var job = getjobname(this);

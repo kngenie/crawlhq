@@ -72,7 +72,7 @@ class WorkSet(object):
 class ClientQueue(object):
     CHECKEDOUT_SPILL_SIZE = 10000
 
-    def __init__(self, worksets):
+    def __init__(self, worksets, active_timeout=10*3600):
         self.worksets = worksets
         if len(self.worksets) == 0:
             logging.warn("%s: no worksets", self)
@@ -80,6 +80,9 @@ class ClientQueue(object):
         self.next = 0
         self.feedcount = 0
         self.lastfeed = None
+        self.lastfeedtime = None
+
+        self.active_timeout = active_timeout
 
         ## checkedout caches CURIs scheduled for this client until they are
         ## flushed to the database (they are likely be removed before getting
@@ -94,12 +97,16 @@ class ClientQueue(object):
     def shutdown(self):
         pass
 
+    def is_active(self):
+        return self.lastfeedtime > time.time() - self.active_timeout
+
     #def enough_room(self):
     #    return len(self.checkedout) < (self.CHECKEDOUT_SPILL_SIZE - 500)
 
     def get_status(self):
         r = dict(feedcount=self.feedcount,
                  lastfeedcount=self.lastfeed,
+                 lastfeedtime=self.lastfeedtime,
                  next=self.next,
                  worksetcount=len(self.worksets))
         worksets = []
@@ -120,9 +127,6 @@ class ClientQueue(object):
         r['qfilecount'] = nqfiles
         return r
         
-    #def is_active(self, url):
-    #    return url in self.checkedout
-            
     def reset(self):
         # TODO: client decommission recovery NOT IMPLEMENTED YET
         # store URLs shipped in log, and send back those unfinished
@@ -163,7 +167,12 @@ class ClientQueue(object):
     #        cocuri = self.checkedout.pop(uri, None)
     #    return cocuri
 
+    # ClientQueue.feed
     def feed(self, n):
+        self.lastfeedtime = time.time()
+        # n = 0 is used for keep-alive (client notifying it's active).
+        if n == 0: return []
+
         checkout_per_ws = n // 4 + 1
         r = []
         for a in (1, 2, 3):
@@ -201,9 +210,14 @@ class ClientQueue(object):
 class Scheduler(object):
     '''per job scheduler. manages assignment of worksets to each client.'''
     
-    def __init__(self, wsdir, mapper):
+    def __init__(self, wsdir, mapper, client_active_timeout=10*3600):
+        """client_active_timeout: max time client remains active without
+        feeding (in seconds)
+        """
         self.wsdir = wsdir
         self.mapper = mapper
+        self.client_active_timeout = client_active_timeout
+
         self.NWORKSETS = self.mapper.nworksets
         self.clients = {}
 
@@ -233,30 +247,18 @@ class Scheduler(object):
         clid = client[0]
         q = self.clients.get(clid)
         if q is None:
-            worksets = [self.worksets[i] for i in self.mapper.wsidforclient(client)]
+            worksets = [self.worksets[i]
+                        for i in self.mapper.wsidforclient(clid)]
             q = ClientQueue(worksets)
             self.clients[clid] = q
             logging.debug("new ClientQueue created for clid=%s", clid)
         return q
 
-    # def workset(self, curi):
-    #     uc = urlsplit(curi['u'])
-    #     h = uc.netloc
-    #     p = h.find(':')
-    #     if p > 0: h = h[:p]
-    #     hosthash = int(_fp31.fp(h) >> (64 - self.NWORKSETS_BITS))
-    #     return hosthash
-
-    # def workset(self, hostfp):
-    #     # don't use % (mod) - FP has much less even distribution in
-    #     # lower bits.
-    #     return hostfp >> (31 - self.NWORKSETS_BITS)
-
     # Scheduler - discovered event
 
-    def schedule(self, curi):
-        #ws = self.workset(curi)
-        ws = self.mapper.workset(curi)
+    def schedule(self, curi, ws=None):
+        if ws is None:
+            ws = self.mapper.workset(curi)
         return self.worksets[ws].schedule(curi)
 
     # Scheduler - finished event
@@ -272,8 +274,18 @@ class Scheduler(object):
     # Scheduler - feed request
 
     def feed(self, client, n):
+        clq = self.get_clientqueue(client)
+        if not clq.is_active():
+            self.mapper.client_activating(client[0])
         curis = self.get_clientqueue(client).feed(n)
         return curis
+
+    def lastfeedtime(self, clid):
+        cl = self.clients.get(clid)
+        return cl and cl.lastfeedtime
+    def is_active(self, clid):
+        cl = self.clients.get(clid)
+        return cl and cl.is_active()
 
     # Scheduler - reset request
 
@@ -286,3 +298,9 @@ class Scheduler(object):
         #    cl.flush_scheduled()
         for ws in self.worksets:
             ws.flush()
+
+    def flush_workset(self, wsid):
+        if 0 <= wsid < len(self.worksets):
+            self.worksets[wsid].flush()
+        else:
+            logging.debug('wsid out of range: %d', wsid)

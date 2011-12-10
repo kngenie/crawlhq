@@ -1,14 +1,17 @@
 import os
+import sys
 import json
 
 import web
 from cStringIO import StringIO
 from gzip import GzipFile
+import logging
 
 def lref(name):
     """returns local path for script-relative resource 'name'
     """
-    # note: SCRIPT_FILENAME is only available in mod_wsgi
+    # note: SCRIPT_FILENAME under lighttpd is broken. you'd need
+    # to create a symbolic link from /var/www
     if 'SCRIPT_FILENAME' not in web.ctx.environ:
         return os.path.join(sys.path[0], name)
     path = web.ctx.environ['SCRIPT_FILENAME']
@@ -17,7 +20,11 @@ def lref(name):
 class BaseApp(object):
     def __init__(self):
         tglobals = dict(format=format)
-        self.templates = web.template.render(lref('t'), globals=tglobals)
+        try:
+            tmpldir = web.ctx.environ.get('TMPLDIR') or lref('t')
+            self.templates = web.template.render(tmpldir, globals=tglobals)
+        except:
+            logging.critical('BaseApp.__init__ failed', exc_info=1)
 
     def render(self, tmpl, *args, **kw):
         # note self.templates[tmpl] does not work.
