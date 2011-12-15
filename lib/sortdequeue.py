@@ -80,9 +80,13 @@ class SortedQueue(object):
                 continue
             key = o.get('id')
             if key is None:
-                key = self.urikey(o)
+                try:
+                    key = self.urikey(o)
+                except UnicodeEncodeError:
+                    pass
                 if key is None:
-                    raise ValueError('urikey->None for %s' % str(o))
+                    logging.error('urikey->None for %s', str(o))
+                    continue
             self.index.append((key, o))
         zf.close()
             
