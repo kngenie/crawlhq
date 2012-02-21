@@ -46,28 +46,42 @@ _fp31 = FPGenerator(0xBA75BB4300000000, 31)
 # _fp63 = FPGenerator(0xE1F8D6B3195D6D97, 63)
 # _fp64 = FPGenerator(0xD74307D3FD3382DB, 64)
 
+class HeadquarterException(Exception):
+    pass
+class DatabaseError(HeadquarterException):
+    pass
+
 class MongoJobConfigs(object):
     def __init__(self, db):
         self.db = db
 
     def get_jobconf(self, job, pname, default=None, nocreate=0):
-        jobconf = self.db.jobconfs.find_one({'name':job}, {pname: 1})
-        if jobconf is None and not nocreate:
-            jobconf = {'name':self.job}
-            self.db.jobconfs.save(jobconf)
-        return jobconf.get(pname, default)
+        try:
+            jobconf = self.db.jobconfs.find_one({'name':job}, {pname: 1})
+            if jobconf is None and not nocreate:
+                jobconf = {'name':self.job}
+                self.db.jobconfs.save(jobconf)
+            return jobconf.get(pname, default)
+        except pymongo.errors.OperationFailure as ex:
+            raise DatabaseError, str(ex)
 
     def save_jobconf(self, job, pname, value, nocreate=0):
-        if nocreate:
-            self.db.jobconfs.update({'name': job}, {pname: value},
-                                    multi=False, upsert=False)
-        else:
-            self.db.jobconfs.update({'name': job}, {pname: value},
-                                    multi=False, upsert=True)
+        try:
+            if nocreate:
+                self.db.jobconfs.update({'name': job}, {pname: value},
+                                        multi=False, upsert=False)
+            else:
+                self.db.jobconfs.update({'name': job}, {pname: value},
+                                        multi=False, upsert=True)
+        except pymongo.errors.OperationFailure as ex:
+            raise DatabaseError, str(ex)
 
     def job_exists(self, job):
-        o = self.db.jobconfs.find_one({'name':job}, {'name':1})
-        return o is not None
+        try:
+            o = self.db.jobconfs.find_one({'name':job}, {'name':1})
+            return o is not None
+        except pymongo.errors.OperationFailure as ex:
+            raise DatabaseError, str(ex)
 
 class CrawlMapper(object):
     '''maps client queue id to set of WorkSets'''
@@ -590,13 +604,16 @@ class ClientAPI:
         number if incoming queue is storing URIs in chunks'''
         p = web.input(max=5000)
         maxn = int(p.max)
-        result = dict(job=job, inq=0, processed=0, scheduled=0, max=maxn,
-                      td=0.0, ts=0.0)
+        result = dict(job=job, inq=0, processed=0, scheduled=0, excluded=0,
+                      max=maxn, td=0.0, ts=0.0)
         start = time.time()
 
         # transient instance for now
-        result.update(hq.get_job(job).processinq(maxn))
-        
+        try:
+            result.update(hq.get_job(job).processinq(maxn))
+        except HeadquarterException as ex:
+            logging.exception('processinq failed')
+            result.update(error=str(ex))
         result.update(t=(time.time() - start))
         return result
 
