@@ -147,12 +147,52 @@ class CrawlJob(object):
             scheduled += 1
         return dict(processed=scheduled, scheduled=scheduled)
 
+    def is_client_active(self, clid):
+        """is client clid active?"""
+        # TODO: update ZooKeeper when active status changes
+        #t = self.client_last_active.get(str(clid))
+        return self.scheduler.is_active(clid)
+
+    def is_workset_active(self, wsid):
+        """is workset wsid assigned to any active client?"""
+        clid = self.mapper.worksetclient[wsid]
+        return self.is_client_active(clid)
+
+    def workset_activating(self, wsid):
+        """activates working set wsid; start sending CURIs to Scheduler
+        and enqueue diverted CURIs back into incoming queue so that
+        processinq will process them (again). called by Scheduler,
+        through CrawlMapper, when client starts feeding.
+        note, unlike workset_deactivating, this method shall not be
+        called from inside processinq method below, because processinq
+        executes it only when at least one CURI is available for processing.
+        if inq is empty, CURIs in divert queues would never be enqueued back.
+        """
+        # this could be executed asynchronously
+        logging.info('workset %s activated', wsid)
+        self.workset_state[wsid] = 1
+        # is it better to move files back into inq directory?
+        qfiles = self.diverter.listqfiles(wsid)
+        logging.info('re-scheduling %s to inq', str(qfiles))
+        self.inq.rqfile.qfiles_available(qfiles)
+
+    def workset_deactivating(self, wsid):
+        """deactivates working set wsid; start sending CURIs into
+        divert queues."""
+        logging.info('workset %s deactivated', wsid)
+        self.workset_state[wsid] = 0
+        # flush Workset queues. we don't move qfiles to diverter yet.
+        # it will be done when other HQ server becomes active on the
+        # workset, and this HQ server starts forwarding CURIs.
+        self.scheduler.flush_workset(wsid)
+
     def processinq(self, maxn):
         '''process incoming queue. maxn paramter adivces
         upper limit on number of URIs processed in this single call.
         actual number of URIs processed may exceed it if incoming queue
         stores URIs in chunks.'''
-        result = dict(processed=0, scheduled=0, excluded=0, td=0.0, ts=0.0)
+        result = dict(processed=0, scheduled=0, excluded=0, saved=0,
+                      td=0.0, ts=0.0)
         for count in xrange(maxn):
             t0 = time.time()
             furi = self.inq.get(0.01)
@@ -160,27 +200,35 @@ class CrawlJob(object):
             result['td'] += (time.time() - t0)
             if furi is None: break
             result['processed'] += 1
-            di = self.get_domaininfo(furi['u'])
-            if di and di['exclude']:
-                result['excluded'] += 1
-                continue
-            t0 = time.time()
-            suri = self.seen.already_seen(furi)
-            if suri['e'] < int(time.time()):
-                if 'w' in furi:
-                    w = furi['w']
-                else:
-                    w = dict()
-                    for k in ('p','v','x'):
-                        m = furi.get(k)
-                        if m is not None:
-                            w[k] = m
-                curi = dict(u=furi['u'], id=suri['_id'], a=w)
-                self.scheduler.schedule(curi)
-                result['scheduled'] += 1
-            result['ts'] += (time.time() - t0)
-        # currently no access to MongoDB
-        #self.mongo.end_request()
+            ws = self.mapper.workset(furi)
+            if self.is_workset_active(ws):
+                # no need to call self.workset_activating(). it's already
+                # done by Scheduler
+                di = self.get_domaininfo(furi['u'])
+                if di and di['exclude']:
+                    result['excluded'] += 1
+                    continue
+                t0 = time.time()
+                suri = self.seen.already_seen(furi)
+                if suri['e'] < int(time.time()):
+                    if 'w' in furi:
+                        a = furi['w']
+                    else:
+                        a = dict()
+                        for k in ('p','v','x'):
+                            m = furi.get(k)
+                            if m is not None:
+                                a[k] = m
+                    curi = dict(u=furi['u'], id=suri['_id'], a=a)
+                    self.scheduler.schedule(curi)
+                    result['scheduled'] += 1
+                result['ts'] += (time.time() - t0)
+            else:
+                if self.workset_state[ws]:
+                    self.workset_deactivating(ws)
+                # client is not active
+                self.diverter.divert(str(ws), furi)
+                result['saved'] += 1
         return result
 
     def makecuri(self, o):
@@ -199,6 +247,17 @@ import errno
 import array
 
 libc = ctypes.cdll.LoadLibrary(ctypes.util.find_library('libc'))
+
+class Watch(object):
+    def __init__(self, wd):
+        self.wd = wd
+        self.c = threading.Condition()
+        self.available = False
+    def wait(self, timeout=None):
+        with self.c:
+            self.available = False
+            self.c.wait(timeout)
+            return self.available
 
 class InqueueWatcher(threading.Thread):
     def __init__(self):
@@ -228,8 +287,8 @@ class InqueueWatcher(threading.Thread):
             self._poll.unregister(self.in_fd)
             os.close(self.in_fd)
             for w in self.watches.values():
-                with w[1]:
-                    w[1].notify_all()
+                with w.c:
+                    w.c.notify_all()
 
     def process_events(self):
         # structure of fixed length part of inotify_event struct
@@ -257,9 +316,10 @@ class InqueueWatcher(threading.Thread):
             if (mask & 0x80) == 0x80:
                 logging.info('new queue file %s' % name)
                 for w in self.watches.values():
-                    if w[0] == wd:
-                        with w[1]:
-                            w[1].notify()
+                    if w.wd == wd:
+                        with w.c:
+                            w.available = True
+                            w.c.notify()
 
     def loop(self):
         self.running = True
@@ -274,8 +334,8 @@ class InqueueWatcher(threading.Thread):
                     # (this is ineffective since only main thread
                     # receives INT signal)
                     for w in self.watches.values():
-                        with w[1]:
-                            w[1].notify_all()
+                        with w.c:
+                            w.c.notify_all()
                 else:
                     logging.error('poll failed', exc_info=1)
                 continue
@@ -286,8 +346,7 @@ class InqueueWatcher(threading.Thread):
             return self.watches[path][1]
         mask = 0x80 # IN_MOVED_TO
         wd = libc.inotify_add_watch(self.in_fd, path, mask)
-        c = threading.Condition()
-        self.watches[path] = [wd, c, False]
+        c = self.watches[path] = Watch(wd)
         return c
 
     def delwatch(self, path):
@@ -296,17 +355,14 @@ class InqueueWatcher(threading.Thread):
         if s < 0:
             logging.warn('failed to remove watch on %s(wd=%d)', path, e[0])
         else:
-            with e[1]:
-                e[2] = True
-                e[1].notify_all()
+            with e.c:
+                e.available = True
+                e.c.notify_all()
             del self.watches[path]
         
     def available(self, path, timeout=None):
         e = self.watches[path]
-        with e[1]:
-            e[2] = False
-            e[1].wait(timeout)
-            return e[2]
+        return e.wait(timeout)
 
 class Dispatcher(object):
     inqwatcher = None
@@ -338,10 +394,7 @@ class Dispatcher(object):
         return r
 
     def wait_available(self, timeout=None):
-        with self.watch:
-            self.__available = False
-            self.watch.wait(timeout)
-            return self.__available
+        return self.watch.wait(timeout)
 
 # TODO move this class to ws directory
 class DispatcherAPI(weblib.QueryApp):

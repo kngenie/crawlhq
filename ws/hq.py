@@ -13,7 +13,6 @@ import re
 import itertools
 from gzip import GzipFile
 from cStringIO import StringIO
-from cfpgenerator import FPGenerator
 from urlparse import urlsplit, urlunsplit
 import threading
 import random
@@ -24,14 +23,15 @@ import logging
 
 import hqconfig
 from fileinq import IncomingQueue
-from filequeue import FileEnqueue, FileDequeue
-import sortdequeue
+from filequeue import FileEnqueue, FileDequeue, DummyFileDequeue
 from scheduler import Scheduler
 from executor import *
 from zkcoord import Coordinator
-from mongodomaininfo import DomainInfo
+#from mongodomaininfo import DomainInfo
+from mongojobconfigs import JobConfigs
 from mongocrawlinfo import CrawlInfo
 import urihash
+from dispatcher import WorksetMapper
 from seen import Seen
 from diverter import Diverter
 
@@ -40,57 +40,47 @@ urls = (
     )
 app = web.application(urls, globals())
 
-# _fp12 = FPGenerator(0xE758000000000000, 12)
-_fp31 = FPGenerator(0xBA75BB4300000000, 31)
-# _fp32 = FPGenerator(0x9B6C9A2F80000000, 32)
-# _fp63 = FPGenerator(0xE1F8D6B3195D6D97, 63)
-# _fp64 = FPGenerator(0xD74307D3FD3382DB, 64)
+class PooledIncomingQueue(IncomingQueue):
+    def init_queues(self, n=5, buffsize=0, maxsize=1000*1000*1000):
+        maxsize = maxsize / n
+        self.write_executor = ThreadPoolExecutor(poolsize=1, queuesize=100)
+        #self.rqfile = FileDequeue(self.qdir, reader=FPSortingQueueFileReader)
+        self.rqfile = DummyFileDequeue(self.qdir)
+        self.qfiles = [FileEnqueue(self.qdir, suffix=str(i),
+                                   maxsize=maxsize,
+                                   buffer=buffsize,
+                                   executor=self.write_executor)
+                       for i in range(n)]
+        self.avail = LifoQueue()
+        for q in self.qfiles:
+            self.avail.put(q)
 
-class HeadquarterException(Exception):
-    pass
-class DatabaseError(HeadquarterException):
-    pass
-
-class MongoJobConfigs(object):
-    def __init__(self, db):
-        self.db = db
-
-    def get_jobconf(self, job, pname, default=None, nocreate=0):
+    def add(self, curis):
+        processed = 0
+        t0 = time.time()
+        enq = self.avail.get()
+        t = time.time() - t0
+        if t > 0.1: logging.warn('self.avail.get() %.4f', t)
         try:
-            jobconf = self.db.jobconfs.find_one({'name':job}, {pname: 1})
-            if jobconf is None and not nocreate:
-                jobconf = {'name':self.job}
-                self.db.jobconfs.save(jobconf)
-            return jobconf.get(pname, default)
-        except pymongo.errors.OperationFailure as ex:
-            raise DatabaseError, str(ex)
+            enq.queue(curis)
+            self.addedcount += len(curis)
+            processed += len(curis)
+            return dict(processed=processed)
+        finally:
+            t0 = time.time()
+            self.avail.put(enq)
+            t = time.time() - t0
+            if t > 0.1: logging.warn('slow self.avail.put() %.4f', t)
 
-    def save_jobconf(self, job, pname, value, nocreate=0):
-        try:
-            if nocreate:
-                self.db.jobconfs.update({'name': job}, {pname: value},
-                                        multi=False, upsert=False)
-            else:
-                self.db.jobconfs.update({'name': job}, {pname: value},
-                                        multi=False, upsert=True)
-        except pymongo.errors.OperationFailure as ex:
-            raise DatabaseError, str(ex)
-
-    def job_exists(self, job):
-        try:
-            o = self.db.jobconfs.find_one({'name':job}, {'name':1})
-            return o is not None
-        except pymongo.errors.OperationFailure as ex:
-            raise DatabaseError, str(ex)
-
-class CrawlMapper(object):
-    '''maps client queue id to set of WorkSets'''
+class CrawlMapper(WorksetMapper):
+    """maps client queue id to set of Worksets
+    """
     def __init__(self, crawljob, nworksets_bits):
+        super(CrawlMapper, self).__init__(nworksets_bits)
         self.crawljob = crawljob
         self.jobconfigs = self.crawljob.jobconfigs
         self.job = self.crawljob.jobname
-        self.nworksets_bits = nworksets_bits
-        self.nworksets = (1 << self.nworksets_bits)
+        #self.nworksets = (1 << nworksets_bits)
         self.load_workset_assignment()
 
         self.client_last_active = {}
@@ -119,75 +109,27 @@ class CrawlMapper(object):
                 if self.worksetclient[i] == clid]
         return qids
 
-    def workset(self, curi):
-        '''reutrns WorkSet id to which curi should be dispatched'''
-        uc = urlsplit(curi['u'])
-        h = uc.netloc
-        p = h.find(':')
-        if p > 0: h = h[:p]
-        # Note: don't use % (mod) - FP hash much less even distribution in
-        # lower bits.
-        hosthash = int(_fp31.fp(h) >> (64 - self.nworksets_bits))
-        return hosthash
-
     def client_activating(self, clid):
         """called back by Scheduler when client gets a new feed request
         when it is inactive."""
         for wsid in self.wsidforclient(clid):
             self.crawljob.workset_activating(wsid)
 
-def FPSortingQueueFileReader(qfile, **kwds):
-    def urikey(o):
-        return urihash.urikey(o['u'])
-    return sortdequeue.SortingQueueFileReader(qfile, urikey)
-    
-class PooledIncomingQueue(IncomingQueue):
-    def init_queues(self, n=5, buffsize=0, maxsize=1000*1000*1000):
-        maxsize = maxsize / n
-        self.write_executor = ThreadPoolExecutor(poolsize=1, queuesize=100)
-        self.rqfile = FileDequeue(self.qdir, reader=FPSortingQueueFileReader)
-        self.qfiles = [FileEnqueue(self.qdir, suffix=str(i),
-                                   maxsize=maxsize,
-                                   buffer=buffsize,
-                                   executor=self.write_executor)
-                       for i in range(n)]
-        self.avail = LifoQueue()
-        for q in self.qfiles:
-            self.avail.put(q)
-
-    def add(self, curis):
-        processed = 0
-        t0 = time.time()
-        enq = self.avail.get()
-        t = time.time() - t0
-        if t > 0.1: logging.warn('self.avail.get() %.4f', t)
-        try:
-            enq.queue(curis)
-            self.addedcount += len(curis)
-            processed += len(curis)
-            return dict(processed=processed)
-        finally:
-            t0 = time.time()
-            self.avail.put(enq)
-            t = time.time() - t0
-            if t > 0.1: logging.warn('slow self.avail.put() %.4f', t)
-
 class CrawlJob(object):
-    NWORKSETS_BITS = 8
-
-    def __init__(self, jobconfigs, jobname, crawlinfo, domaininfo):
+    def __init__(self, jobconfigs, jobname, crawlinfo):
         self.jobconfigs = jobconfigs
         self.jobname = jobname
         self.mapper = CrawlMapper(self, self.NWORKSETS_BITS)
         self.workset_state = [0 for i in range(self.mapper.nworksets)]
 
         # seen-db initialization is delayed until it's actually needed
+        # and never be initialized in distinct process settings.
         self.seen = None
         #self.seen = Seen(dbdir=os.path.join(HQ_HOME, 'seen', self.jobname))
         self.crawlinfodb = crawlinfo
-        self.domaininfo = domaininfo
         self.scheduler = Scheduler(hqconfig.worksetdir(self.jobname),
                                    self.mapper)
+
         # self.inq = HashSplitIncomingQueue(
         #     qdir=hqconfig.inqdir(self.jobname),
         #     buffsize=500)
@@ -197,11 +139,11 @@ class CrawlJob(object):
 
         self.diverter = Diverter(self.jobname, self.mapper)
 
-        #self.discovered_executor = ThreadPoolExecutor(poolsize=1)
-
         # currently disabled by default - too slow
         self.use_crawlinfo = False
         self.save_crawlinfo = False
+
+        self.last_inq_count = 0
 
     PARAMS = [('use_crawlinfo', bool),
               ('save_crawlinfo', bool)]
@@ -220,7 +162,6 @@ class CrawlJob(object):
         logging.info("shutting down crawlinfo")
         self.crawlinfodb.shutdown()
         logging.info("done.")
-        #self.discovered_executor.shutdown()
 
     def get_status(self):
         r = dict(job=self.jobname, oid=id(self))
@@ -239,13 +180,13 @@ class CrawlJob(object):
     #def discovered_async(self, curis):
     #    return self.inq.add(curis)
 
-    def get_domaininfo(self, url):
-        uc = urlsplit(url)
-        host = uc.netloc
-        p = host.find(':')
-        if p > 0: host = host[:p]
-        di = self.domaininfo.get(host)
-        return di
+    # def get_domaininfo(self, url):
+    #     uc = urlsplit(url)
+    #     host = uc.netloc
+    #     p = host.find(':')
+    #     if p > 0: host = host[:p]
+    #     di = self.domaininfo.get(host)
+    #     return di
         
     def schedule(self, curis):
         '''schedule curis bypassing seen-check. typically used for starting
@@ -259,111 +200,16 @@ class CrawlJob(object):
     def discovered(self, curis):
         return self.inq.add(curis)
         
-    def is_client_active(self, clid):
-        """is client clid active?"""
-        # TODO: update ZooKeeper when active status changes
-        #t = self.client_last_active.get(str(clid))
-        return self.scheduler.is_active(clid)
-
-    def is_workset_active(self, wsid):
-        """is workset wsid assigned to any active client?"""
-        clid = self.mapper.worksetclient[wsid]
-        return self.is_client_active(clid)
-
-    def workset_activating(self, wsid):
-        """activates working set wsid; start sending CURIs to Scheduler
-        and enqueue diverted CURIs back into incoming queue so that
-        processinq will process them (again). called by Scheduler,
-        through CrawlMapper, when client starts feeding.
-        note, unlike workset_deactivating, this method shall not be
-        called from inside processinq method below, because processinq
-        executes it only when at least one CURI is available for processing.
-        if inq is empty, CURIs in divert queues would never be enqueued back.
-        """
-        # this could be executed asynchronously
-        logging.info('workset %s activated', wsid)
-        self.workset_state[wsid] = 1
-        # is it better to move files back into inq directory?
-        qfiles = self.diverter.listqfiles(wsid)
-        logging.info('re-scheduling %s to inq', str(qfiles))
-        self.inq.rqfile.qfiles_available(qfiles)
-
-    def workset_deactivating(self, wsid):
-        """deactivates working set wsid; start sending CURIs into
-        divert queues."""
-        logging.info('workset %s deactivated', wsid)
-        self.workset_state[wsid] = 0
-        # flush Workset queues. we don't move qfiles to diverter yet.
-        # it will be done when other HQ server becomes active on the
-        # workset, and this HQ server starts forwarding CURIs.
-        self.scheduler.flush_workset(wsid)
-
-    def processinq(self, maxn):
-        '''process incoming queue. maxn paramter adivces
-        upper limit on number of URIs processed in this single call.
-        actual number of URIs processed may exceed it if incoming queue
-        stores URIs in chunks.'''
-
-        # lazy initialization of seen db
-        if not self.seen:
-            try:
-                cachesize = hqconfig.get('seencache')
-                if cachesize: cachesize = int(cachesize)*(1024**2)
-            except:
-                cachesize = None
-            self.seen = Seen(dbdir=hqconfig.seendir(self.jobname),
-                             block_cache_size=cachesize)
-
-        result = dict(processed=0, scheduled=0, excluded=0, saved=0,
-                      td=0.0, ts=0.0)
-        for count in xrange(maxn):
-            t0 = time.time()
-            furi = self.inq.get(0.01)
-            result['td'] += (time.time() - t0)
-            if furi is None: break
-            result['processed'] += 1
-            ws = self.mapper.workset(furi)
-            if self.is_workset_active(ws):
-                # no need to call self.workset_activating(). it's already
-                # done by Scheduler.
-                di = self.get_domaininfo(furi['u'])
-                if di and di['exclude']:
-                    result['excluded'] += 1
-                    continue
-                t0 = time.time()
-                suri = self.seen.already_seen(furi)
-                if suri['e'] < int(time.time()):
-                    if 'w' in furi:
-                        a = furi['w']
-                    else:
-                        a = dict()
-                        for k in ('p','v','x'):
-                            m = furi.get(k)
-                            if m is not None:
-                                a[k] = m
-                    curi = dict(u=furi['u'], id=suri['_id'], a=a)
-                    self.scheduler.schedule(curi, ws)
-                    result['scheduled'] += 1
-                result['ts'] += (time.time() - t0)
-            else:
-                if self.workset_state[ws]:
-                    self.workset_deactivating(ws)
-                # client is not active
-                self.diverter.divert(str(ws), furi)
-                result['saved'] += 1
-        return result
-
     def makecuri(self, o):
+        # temporary rescue measure. delete after everything's got fixed.
         if 'a' not in o:
             if 'w' in o:
-                o['a'] = o['w']
-                del o['w']
+                o['a'] = o.pop('w')
             else:
                 a = dict()
                 for k in 'pxv':
                     if k in o:
-                        a[k] = o[k]
-                        del o[k]
+                        a[k] = o.pop(k)
                 if a: o['a'] = a
         return o
 
@@ -380,6 +226,12 @@ class CrawlJob(object):
                              client, t, len(curis))
             self.crawlinfodb.mongo.end_request()
         r = [self.makecuri(u) for u in curis]
+        # if client queue is empty, request incoming queue to flush
+        if not r:
+            # but do not flush too frequently.
+            if self.inq.addedcount > self.last_inq_count + 10000:
+                self.inq.flush
+                self.last_inq_count = self.inq.addedcount
         return r
 
     def finished(self, curis):
@@ -412,14 +264,14 @@ class Headquarters(object):
         self.crawlinfo = CrawlInfo('wide')
         self.mongo = pymongo.Connection(hqconfig.get('mongo'))
         self.configdb = self.mongo.crawl
-        self.domaininfo = DomainInfo(self.configdb)
-        self.jobconfigs = MongoJobConfigs(self.configdb)
+        #self.domaininfo = DomainInfo(self.configdb)
+        self.jobconfigs = JobConfigs(self.configdb)
         self.coordinator = Coordinator(hqconfig.get('zkhosts'))
 
     def shutdown(self):
         for job in self.jobs.values():
             job.shutdown()
-        self.domaininfo.shutdown()
+        #self.domaininfo.shutdown()
         self.configdb = None
         self.mongo.disconnect()
 
@@ -429,9 +281,11 @@ class Headquarters(object):
             if job is None:
                 if nocreate and not self.jobconfigs.job_exists(jobname):
                     raise ValueError('unknown job %s' % jobname)
+                # job = self.jobs[jobname] = CrawlJob(
+                #     self.jobconfigs, jobname, self.crawlinfo)
                 job = self.jobs[jobname] = CrawlJob(
-                    self.jobconfigs, jobname, self.crawlinfo, self.domaininfo)
-                self.coordinator.publish_job(job)
+                    self.jobconfigs, jobname, self.crawlinfo)
+            self.coordinator.publish_job(job)
             return job
 
         self.schedulers = {}
@@ -598,25 +452,6 @@ class ClientAPI:
             logging.debug("mdiscovered %s", result)
         return result
             
-    def do_processinq(self, job):
-        '''process incoming queue. max parameter advise upper limit on
-        number of URIs processed. actually processed URIs may exceed that
-        number if incoming queue is storing URIs in chunks'''
-        p = web.input(max=5000)
-        maxn = int(p.max)
-        result = dict(job=job, inq=0, processed=0, scheduled=0, excluded=0,
-                      max=maxn, td=0.0, ts=0.0)
-        start = time.time()
-
-        # transient instance for now
-        try:
-            result.update(hq.get_job(job).processinq(maxn))
-        except HeadquarterException as ex:
-            logging.exception('processinq failed')
-            result.update(error=str(ex))
-        result.update(t=(time.time() - start))
-        return result
-
     def do_feed(self, job):
         p = web.input(n=5, name=None, nodes=1)
         name = int(p.name)
@@ -672,7 +507,8 @@ class ClientAPI:
             return dict(success=1, r=r)
         except Exception as ex:
             logging.error('get_status failed', exc_info=1)
-            return dict(success=0, err=str(ex))
+            #return dict(success=0, err=str(ex))
+            return dict(success=0, err=traceback.format_exc(limit=2))
 
     def do_worksetstatus(self, job):
         r = hq.get_job(job).get_workset_status()
