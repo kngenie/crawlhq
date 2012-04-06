@@ -1,6 +1,7 @@
 #!/usr/bin/python
 import sys, os
-sys.path.append('/opt/hq/lib')
+LIBDIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../lib'))
+if LIBDIR not in sys.path: sys.path.append(LIBDIR)
 import leveldb
 import struct
 
@@ -10,13 +11,14 @@ if len(sys.argv) < 2:
 job = sys.argv[1]
 
 h = leveldb.IntHash(os.path.join('/1/crawling/hq/seen', job))
-it = h.new_iterator()
-it.seek_to_first()
-while it.valid():
-    it.next()
-    if not it.valid(): break
-    k, = struct.unpack('l', it.key())
-    print k
-del it
-del h
-
+try:
+  it = h.new_iterator()
+  it.seek_to_first()
+  while it.valid():
+      it.next()
+      if not it.valid(): break
+      k, = struct.unpack('l', it.key())
+      print k
+  del it
+finally:
+  del h

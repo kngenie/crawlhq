@@ -60,7 +60,9 @@ class WorkSet(object):
         while len(r) < n:
             curi = self.deq.get(timeout=0.001)
             if curi is None:
-                self.enq.close()
+                # avoid flushing queue too frequently
+                if self.enq.queue_count > 10000:
+                    self.enq.close()
                 break
             r.append(curi)
         self.checkedoutcount += len(r)

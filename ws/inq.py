@@ -95,7 +95,8 @@ class DiscoveredHandler(object):
         return json.dumps(r, check_circular=False, separators=',:') + "\n"
     
     def decode_content(self, data):
-        if web.ctx.env.get('HTTP_CONTENT_ENCODING') == 'gzip':
+        if web.ctx.env.get('HTTP_CONTENT_ENCODING') == 'gzip' or \
+                data[0:2] == '\x1f\x8b':
             ib = StringIO(data)
             zf = GzipFile(fileobj=ib)
             return zf.read()

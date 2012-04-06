@@ -48,12 +48,17 @@ class FileEnqueue(object):
 
         self.file = None
         self.filename = None
+        self.__queuecount = 0
 
         self.executor = executor
         self.gzip = gzip
         self.__size = None
 
     WRITE_BUFSIZE = 50000
+
+    @property
+    def queue_count(self):
+        return self.__queuecount
 
     @property
     def buffered_count(self):
@@ -158,10 +163,11 @@ class FileEnqueue(object):
                                          self.filename)
                         else:
                             raise
-                    self.filename = None
-                    self.openfilename = None
-                    self.__size = None
-                    # leave self.starttime - it is used by monitor()
+                    finally:
+                        self.filename = None
+                        self.openfilename = None
+                        self.__size = None
+                        self.__queuecount = 0
                 return True
             finally:
                 self.lock.release()
@@ -223,6 +229,7 @@ class FileEnqueue(object):
                 with self.bufflock:
                     while curi:
                         self.buffer.append(curi)
+                        self.__queuecount += 1
                         curi = next(it, None)
                         if len(self.buffer) > self.buffer_size:
                             if self.executor:
@@ -241,6 +248,7 @@ class FileEnqueue(object):
                 self.executor.execute(self._writeout, curis)
             else:
                 self._writeout(curis)
+            self.__queuecount += len(curis)
 
     def age(self):
         return time.time() - self.starttime
