@@ -1,0 +1,19 @@
+#!/usr/bin/python
+# re-arrange incoming queue so that each queue file contains only small
+# subset of IDs.
+
+import sys, os
+import re
+sys.path.append('/opt/hq/lib')
+from filequeue import FileEnqueue, FileDequeue
+from fileinq import IncomingQueue, SplitIncomingQueue
+from scheduler import Seen
+
+winbits = 54
+outq = SplitIncomingQueue('wide', None, '/1/incoming/hq.sp', winbits)
+inq = IncomingQueue('wide', None, '/1/incoming/hq', noupdate=True)
+
+while 1:
+    o = inq.get(timeout=0.01)
+    if not o: break
+    outq.add((o,))
