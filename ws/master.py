@@ -119,9 +119,12 @@ class Distributor(object):
             for c in cs:
                 self.client_server[str(c)] = ch
             
-    def get_server_channel(self, curi):
+    def get_client(self, curi):
         wsid = self.mapper.workset(curi)
-        client = self.wscl[wsid]
+        return self.wscl[wsid]
+
+    def get_server_channel(self, curi):
+        client = self.get_client(curi)
         channel = self.client_server[str(client)]
         return channel
         
@@ -220,6 +223,14 @@ class JobActions(QueryApp):
 
         return result
 
+    def do_locate(self, job):
+        p = web.input(url=None)
+        if p.url is None:
+            return dict(success=0, **p)
+        dist = master.get_distributor(job)
+        client = dist.get_client(dict(u=p.url))
+        return dict(success=1, r=dict(client=client), **p)
+
 urls = (
     '/', 'QuarterMasterApp',
     '/q/(.*)', 'Query',
@@ -228,3 +239,4 @@ urls = (
 web.config.debug = True
 app = web.application(urls, globals())
 application = app.wsgifunc()
+
