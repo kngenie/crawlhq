@@ -17,6 +17,7 @@ import urihash
 from cfpgenerator import FPGenerator
 from scheduler import Scheduler
 
+import tasprefix
 import weblib
 
 class WorksetMapper(object):
@@ -27,16 +28,16 @@ class WorksetMapper(object):
 
         self._fp31 = FPGenerator(0xBA75BB4300000000, 31)
 
+    def hosthash(self, curi):
+        return int(self._fp31.fp(tasprefix.prefix(curi)))
+
     def workset(self, curi):
         '''reutrns WorkSet id to which curi should be dispatched'''
-        uc = urlsplit(curi['u'])
-        h = uc.netloc
-        p = h.find(':')
-        if p > 0: h = h[:p]
-        # Note: don't use % (mod) - FP hash much less even distribution in
-        # lower bits.
-        hosthash = int(self._fp31.fp(h) >> (64 - self.nworksets_bits))
-        return hosthash
+        hosthash = self.hosthash(curi)
+        # Note: don't use % (mod) - FP hash is much less evenly distributed
+        # in lower bits.
+        ws = hosthash >> (64 - self.nworksets_bits)
+        return ws
 
 class WorksetWriter(object):
     """writing side of Workset."""
