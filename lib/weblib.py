@@ -34,7 +34,7 @@ class BaseApp(object):
 class QueryApp(object):
     def _dispatch(self, method, *args):
         f = getattr(self, method, None)
-        if not f: raise web.notfound('bad action %s' % c)
+        if not f: raise web.notfound('bad action %s on %s' % method)
         r = f(*args)
         if isinstance(r, dict):
             r = json.dumps(r, check_circular=False, separators=',:') + '\n'
