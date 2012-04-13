@@ -21,8 +21,8 @@ class WorksetMapperTestCase(unittest.TestCase):
         assert h4 != h1
 
     def testWorkset(self):
-        ws1 = self.mapper.workset('http://www.archive.org/')
-        print ws1
+        curi = dict(u='http://www.archive.org/')
+        ws1 = self.mapper.workset(curi)
         assert 0 <= ws1 <= 255, '%s is not within 8 bits' % ws1
 
 if __name__ == '__main__':

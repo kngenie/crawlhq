@@ -32,9 +32,10 @@ class BaseApp(object):
         return t(*args)
     
 class QueryApp(object):
-    def _dispatch(self, method, *args):
-        f = getattr(self, method, None)
-        if not f: raise web.notfound('bad action %s' % c)
+    def _dispatch(self, p, c, *args):
+        f = getattr(self, p + c, None)
+        if not f: raise web.notfound('bad action %s (no method %s in %s)' % (
+                c, p + c, self))
         r = f(*args)
         if isinstance(r, dict):
             r = json.dumps(r, check_circular=False, separators=',:') + '\n'
@@ -42,6 +43,7 @@ class QueryApp(object):
         return r
 
     def decode_content(self, data):
+        """decod if content is gzipped"""
         if web.ctx.env.get('HTTP_CONTENT_ENCODING') == 'gzip':
             ib = StringIO(data)
             zf = GzipFile(fileobj=ib)
@@ -49,8 +51,8 @@ class QueryApp(object):
         else:
             return data
             
-    def GET(self, c):
-        return self._dispatch('do_'+c)
-    def POST(self, c):
-        return self._dispatch('post_'+c)
-        
+    def GET(self, c, *args):
+        return self._dispatch('do_', c, *args)
+    def POST(self, c, *args):
+        return self._dispatch('post_', c, *args)
+    

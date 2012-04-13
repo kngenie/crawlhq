@@ -2,6 +2,7 @@
 # MongoDB implementation of domain info database
 import pymongo
 import logging
+from urlparse import urlsplit
 
 class DomainInfo(object):
     '''DomainInfo backed by MongoDB. each domain info is stored as
@@ -55,6 +56,14 @@ class DomainInfo(object):
             h = hn
             if '.' in h: hl = h['.']
         return hl
+
+    def get_byurl(self, url):
+        uc = urlsplit(url)
+        host = uc.netloc
+        p = host.find(':')
+        if p > 0: host = host[:p]
+        di = self.get(host)
+        return di
 
 if __name__ == '__main__':
     o = DomainInfo(db='crawltest')

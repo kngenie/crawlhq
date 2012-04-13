@@ -3,7 +3,6 @@ import os
 import re
 
 import hqconfig
-from dispatcher import WorksetWriter
 from filequeue import FileEnqueue, FileDequeue
 
 class DivertQueue(object):
@@ -47,7 +46,7 @@ class Diverter(object):
     def __init__(self, job, mapper):
         self.jobname = job
         self.mapper = map
-        self.basedir = os.path.join(hqconfig.HQ_HOME, 'div', self.jobname)
+        self.basedir = os.path.join(hqconfig.get('datadir'), 'div', self.jobname)
         if not os.path.isdir(self.basedir):
             os.makedirs(self.basedir)
 

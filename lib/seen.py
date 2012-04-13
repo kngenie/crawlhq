@@ -38,6 +38,8 @@ class Seen(object):
 
     def _open(self):
         logging.info("opening seen-db %s", self.dbdir)
+        if not os.path.isdir(self.dbdir):
+            os.makedirs(self.dbdir)
         self.seendb = leveldb.IntHash(self.dbdir,
                                       block_cache_size=self.block_cache_size,
                                       block_size=4096,

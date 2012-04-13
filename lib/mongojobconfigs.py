@@ -26,21 +26,30 @@ class JobConfigs(object):
         return JobConfig(self.db, job)
 
     def get_jobconf(self, job, pname, default=None, nocreate=0):
-        jobconf = self.db.jobconfs.find_one({'name':job}, {pname: 1})
-        if jobconf is None and not nocreate:
-            jobconf = {'name':self.job}
-            self.db.jobconfs.save(jobconf)
-        return jobconf.get(pname, default)
+        try:
+            jobconf = self.db.jobconfs.find_one({'name':job}, {pname: 1})
+            if jobconf is None and not nocreate:
+                jobconf = {'name':self.job}
+                self.db.jobconfs.save(jobconf)
+            return jobconf.get(pname, default)
+        except pymongo.errors.OperationFailure as ex:
+            raise IOError, str(ex)
 
     def save_jobconf(self, job, pname, value, nocreate=0):
-        if nocreate:
-            self.db.jobconfs.update({'name': job}, {pname: value},
-                                    multi=False, upsert=False)
-        else:
-            self.db.jobconfs.update({'name': job}, {pname: value},
-                                    multi=False, upsert=True)
+        try:
+            if nocreate:
+                self.db.jobconfs.update({'name': job}, {pname: value},
+                                        multi=False, upsert=False)
+            else:
+                self.db.jobconfs.update({'name': job}, {pname: value},
+                                        multi=False, upsert=True)
+        except pymongo.errors.OperationFailure as ex:
+            raise DatabaseError, str(ex)
 
     def job_exists(self, job):
-        o = self.db.jobconfs.find_one({'name':job}, {'name':1})
-        return o is not None
+        try:
+            o = self.db.jobconfs.find_one({'name':job}, {'name':1})
+            return o is not None
+        except pymongo.errors.OperationFailure as ex:
+            raise IOError, str(ex)
 

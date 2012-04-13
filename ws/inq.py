@@ -20,6 +20,8 @@ import hqconfig
 from mongojobconfigs import JobConfigs
 from fileinq import IncomingQueue
 from filequeue import FileEnqueue
+from weblib import QueryApp
+from handlers import DiscoveredHandler
 
 class CrawlJob(object):
     def __init__(self, jobconfig):
@@ -69,114 +71,16 @@ class Headquarters(object):
 hq = Headquarters()
 atexit.register(hq.shutdown)
 
-class DiscoveredHandler(object):
+class ClientAPI(QueryApp, DiscoveredHandler):
+
+    def __init__(self):
+        self.hq = hq
+
+    # overriding QueryApp.{GET,POST} because argument order is different
     def GET(self, job, action):
-        h = getattr(self, 'do_' + action, None)
-        if h is None: raise web.notfound(action)
-        response = h(job)
-        if isinstance(response, dict):
-            response = json.dumps(response, check_circular=False,
-                                  separators=',:') + "\n"
-            web.header('content-type', 'text/json')
-        return response
-
+        return self._dispatch('do_', action, job)
     def POST(self, job, action):
-        h = getattr(self, 'post_' + action, None)
-        if h is None: raise web.notfound(action)
-        response = h(job)
-        if isinstance(response, dict):
-            response = json.dumps(response, check_circular=False,
-                                  separators=',:') + "\n"
-            web.header('content-type', 'text/json')
-        return response
-
-    def jsonres(self, r):
-        web.header('content-type', 'text/json')
-        return json.dumps(r, check_circular=False, separators=',:') + "\n"
-    
-    def decode_content(self, data):
-        if web.ctx.env.get('HTTP_CONTENT_ENCODING') == 'gzip' or \
-                data[0:2] == '\x1f\x8b':
-            ib = StringIO(data)
-            zf = GzipFile(fileobj=ib)
-            return zf.read()
-        else:
-            return data
-
-    def post_discovered(self, job):
-        '''receives URLs found as 'outlinks' in just downloaded page.
-        do_discovered runs already-seen test and then schedule a URL
-        for crawling with last-modified and content-hash obtained
-        from seen database (if previously crawled)'''
-        
-        p = web.input(force=0)
-        if 'u' not in p:
-            return {error:'u value missing'}
-
-        furi = dict(u=p.u)
-        for k in ('p', 'v', 'x'):
-            if k in p and p[k] is not None: furi[k] = p[k]
-
-        try:
-            cj = hq.get_job(job)
-        except Exception as ex:
-            # TODO: return 404?
-            return dict(err=str(ex))
-        if p.force:
-            return cj.schedule([furi])
-        else:
-            return cj.discovered([furi])
-
-    def post_mdiscovered(self, job):
-        '''receives submission of "discovered" events in batch.
-        this version simply queues data submitted in incoming queue
-        to minimize response time. entries in the incoming queue
-        will be processed by separate processinq call.'''
-        result = dict(processed=0)
-        data = None
-        try:
-            data = web.data()
-            curis = json.loads(self.decode_content(data))
-        except:
-            web.debug("json.loads error:data=%s" % data)
-            result['error'] = 'invalid data - json parse failed'
-            return result
-        if isinstance(curis, dict):
-            force = curis.get('f')
-            curis = curis['u']
-        elif isinstance(curis, list):
-            force = False
-        else:
-            result['error'] = 'invalid data - not an array'
-            return result
-        if len(curis) == 0:
-            return result
-
-
-        try:
-            cj = hq.get_job(job)
-        except Exception as ex:
-            result['error'] = str(ex)
-            return result
-
-        start = time.time()
-        if force:
-            result.update(cj.schedule(curis))
-        else:
-            result.update(cj.discovered(curis))
-        t = time.time() - start
-        result.update(t=t)
-        if t / len(curis) > 1e-3:
-            logging.warn("slow discovered: %.3fs for %d", t, len(curis))
-        else:
-            logging.debug("mdiscovered %s", result)
-        return result
-
-    def do_flush(self, job):
-        '''flushes cached objects into database for safe shutdown'''
-        hq.get_job(job).flush()
-        r = dict(ok=1)
-        return r
+        return self._dispatch('post_', action, job)
 
     def do_testinq(self, job):
         """test method for checking if URL mapping is configured correctly."""
@@ -185,7 +89,7 @@ class DiscoveredHandler(object):
             
 logging.basicConfig(level=logging.WARN)
 urls = (
-    '/(.*)/(.*)', 'DiscoveredHandler',
+    '/(.*)/(.*)', 'ClientAPI',
     )
 app = web.application(urls, globals())
 
