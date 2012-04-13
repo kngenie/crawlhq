@@ -7,21 +7,15 @@ from mongojobconfigs import JobConfigs
 # HQ installation directory
 HQHOME = os.path.abspath(os.path.join(os.path.dirname('__file__'), '..'))
 
-#HQ_HOME = '/1/crawling/hq'
-
-#INQDIR = os.path.join(HQ_HOME, 'inq')
-#SEENDIR = os.path.join(HQ_HOME, 'seen')
-#WORKSETDIR = os.path.join(HQ_HOME, 'ws')
-
 # 255 worksets
 NWORKSETS_BITS = 8
 
 def inqdir(job):
-    return os.path.join(get('datadir'), get('inqdir'), job)
+    return os.path.join(get('datadir'), job, get('inqdir'))
 def seendir(job):
-    return os.path.join(get('datadir'), get('seendir'), job)
+    return os.path.join(get('datadir'), job, get('seendir'))
 def worksetdir(job):
-    return os.path.join(get('datadir'), get('worksetdir'), job)
+    return os.path.join(get('datadir'), job, get('worksetdir'))
 
 ZKHOSTS = ['crawl433.us.archive.org:2181',
            'crawl434.us.archive.org:2181',

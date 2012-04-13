@@ -46,7 +46,7 @@ class Diverter(object):
     def __init__(self, job, mapper):
         self.jobname = job
         self.mapper = map
-        self.basedir = os.path.join(hqconfig.get('datadir'), 'div', self.jobname)
+        self.basedir = os.path.join(hqconfig.get('datadir'), self.jobname, 'div')
         if not os.path.isdir(self.basedir):
             os.makedirs(self.basedir)
 
