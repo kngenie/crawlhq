@@ -389,7 +389,7 @@ class FileDequeue(object):
 
     def next_rqfile(self, timeout=0.0):
         '''blocks until next qfile becomes available'''
-        #print >>sys.stderr, "next_rqfile timeout=%.1f" % timeout
+        #print >>sys.stderr, "next_rqfile timeout=%.3f" % timeout
         remaining_timeout = timeout
         pause = 0.0
         while 1:

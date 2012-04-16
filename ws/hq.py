@@ -122,12 +122,9 @@ class CrawlJob(object):
         self.scheduler = Scheduler(hqconfig.worksetdir(self.jobname),
                                    self.mapper)
 
-        self.workset_state = [0 for i in range(self.mapper.nworksets)]
-
         self.domaininfo = domaininfo
 
-        self.dispatcher = Dispatcher(self.jobconfigs,
-                                     self.domaininfo,
+        self.dispatcher = Dispatcher(self.domaininfo,
                                      self.jobname,
                                      mapper=self.mapper,
                                      scheduler=self.scheduler)
@@ -243,7 +240,9 @@ class Headquarters(object):
         # single shared CrawlInfo database
         # named 'wide' for historical reasons.
         self.crawlinfo = CrawlInfo('wide')
-        self.mongo = pymongo.Connection(hqconfig.get('mongo'))
+        mongoserver = hqconfig.get('mongo')
+        logging.warn('using MongoDB: %s', mongoserver)
+        self.mongo = pymongo.Connection(mongoserver)
         self.configdb = self.mongo.crawl
         self.domaininfo = DomainInfo(self.configdb)
         self.jobconfigs = JobConfigs(self.configdb)

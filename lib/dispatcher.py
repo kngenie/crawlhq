@@ -145,17 +145,17 @@ class InqueueWatcher(threading.Thread):
                 self.process_events()
     def addwatch(self, path):
         if path in self.watches:
-            return self.watches[path][1]
+            return self.watches[path]
         mask = 0x80 # IN_MOVED_TO
         wd = libc.inotify_add_watch(self.in_fd, path, mask)
-        c = self.watches[path] = Watch(wd)
-        return c
+        watch = self.watches[path] = Watch(wd)
+        return watch
 
     def delwatch(self, path):
         e = self.watches[path]
-        s = libc.inotity_rm_watch(self.in_fd, e[0])
+        s = libc.inotity_rm_watch(self.in_fd, e.wd)
         if s < 0:
-            logging.warn('failed to remove watch on %s(wd=%d)', path, e[0])
+            logging.warn('failed to remove watch on %s(wd=%d)', path, e.wd)
         else:
             with e.c:
                 e.available = True
@@ -171,35 +171,60 @@ def FPSortingQueueFileReader(qfile, **kwds):
         return urihash.urikey(o['u'])
     return sortdequeue.SortingQueueFileReader(qfile, urikey)
     
+class ExcludedList(object):
+    """URL list for storing excluded URLs. As URLs are checked for exclusion
+    before seen check, there are (a lot of) duplicates.
+    read-out is not supported because current HQ makes no use of these URLs.
+    """
+    # TODO: duplicated code with DivertQueue
+    def __init__(self, jobname, bufsize=20):
+        self.qdir = os.path.join(hqconfig.get('datadir'), jobname, 'ex')
+        if not os.path.isdir(self.qdir):
+            os.makedirs(self.qdir)
+        FileEnqueue.recover(self.qdir)
+        self.enq = FileEnqueue(self.qdir, buffer=bufsize, suffix='ex')
+        self.queuedcount = 0
+
+    def flush(self):
+        self.enq._flush()
+        return self.enq.close()
+
+    def shutdown(self):
+        self.flush()
+
+    def get_status(self):
+        r = dict(queued=self.queuedcount)
+        return r
+
+    def add(self, furi):
+        self.enq.queue(furi)
+        self.queuedcount += 1
+
 class Dispatcher(object):
     inqwatcher = None
 
-    # TODO: take JobConfig, instead of jobconfigs + job
-    def __init__(self, jobconfigs, domaininfo, job, mapper,
+    # TODO: take JobConfig, instead of job
+    def __init__(self, domaininfo, job, mapper,
                  scheduler):
         self.domaininfo = domaininfo
-        self.jobconfigs = jobconfigs
         self.jobname = job
         self.mapper = mapper
         self.scheduler = scheduler
 
-        if not self.jobconfigs.job_exists(self.jobname):
-            raise ValueError('unknown job %s' % self.jobname)
-
-        #self.job = CrawlJob(self.jobconfigs, self.jobname, self.domaininfo)
         # TODO: inject these objects from outside
         qdir = hqconfig.inqdir(self.jobname)
         self.inq = FileDequeue(qdir, reader=FPSortingQueueFileReader)
-        if not self.mapper:
-            self.mapper = WorksetMapper(hqconfig.NWORKSETS_BITS)
         self.seen = Seen(dbdir=hqconfig.seendir(self.jobname))
         self.diverter = Diverter(self.jobname, self.mapper)
+        self.excludedlist = ExcludedList(self.jobname)
+
+        self.workset_state = [0 for i in range(self.mapper.nworksets)]
 
         # TODO: this could be combined with FileDequeue above in a single class
         if Dispatcher.inqwatcher is None:
             iqw = Dispatcher.inqwatcher = InqueueWatcher()
             iqw.start()
-        self.watch = iqw.addwatch(hqconfig.inqdir(self.jobname))
+        self.watch = Dispatcher.inqwatcher.addwatch(hqconfig.inqdir(self.jobname))
 
     def shutdown(self):
         #if self.job: self.job.shutdown()
@@ -209,6 +234,8 @@ class Dispatcher(object):
         # self.scheduler.shutdown()
         logging.info("shutting down diverter")
         self.diverter.shutdown()
+        logging.info("shutting down excludedlist")
+        self.excludedlist.shutdown()
         logging.info("done.")
 
     def flush(self):
@@ -275,6 +302,7 @@ class Dispatcher(object):
         for count in xrange(maxn):
             t0 = time.time()
             furi = self.inq.get(0.01)
+            print furi
             
             result['td'] += (time.time() - t0)
             if furi is None: break
@@ -285,6 +313,7 @@ class Dispatcher(object):
                 # done by Scheduler
                 di = self.domaininfo.get_byurl(furi['u'])
                 if di and di['exclude']:
+                    self.excludedlist.add(furi)
                     result['excluded'] += 1
                     continue
                 t0 = time.time()

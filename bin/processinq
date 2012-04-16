@@ -21,6 +21,7 @@ import hqconfig
 from mongojobconfigs import JobConfigs
 from mongodomaininfo import DomainInfo
 from dispatcher import Dispatcher
+from scheduler import Scheduler
 
 DEFAULT_BINDADDR = ('127.0.0.1', 8819)
 
@@ -73,7 +74,9 @@ do_flush = False
 mongo = pymongo.Connection(hqconfig.get('mongo'))
 domaininfo = DomainInfo(mongo.crawl)
 jobconfigs = JobConfigs(mongo.crawl)
-dispatcher = Dispatcher(jobconfigs, domaininfo, job)
+mapper = WorksetMapper(hqconfig.NWORKSETS_BITS)
+scheduler = Scheduler(hqconfig.worksetdir(job), mapper, reading=False)
+dispatcher = Dispatcher(domaininfo, job, mapper=mapper, scheduler=scheduler)
 
 if hostport and tornado:
     # TODO

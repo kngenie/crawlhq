@@ -57,9 +57,9 @@ def configobj():
     return _configobj
 
 def mergeconfig(config):
-    global _config
+    global _configobj
     if isinstance(config, list):
-        configobj = ConfigObj(config)
+        config = ConfigObj(config)
     elif not isinstance(config, ConfigObj):
         raise ValueError, 'config must be a ConfigObj'
     configobj().merge(config)
