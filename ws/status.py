@@ -36,18 +36,26 @@ app = web.application(urls, globals())
 
 class Status(BaseApp):
     '''implements control web user interface for crawl headquarters'''
+    TMPLDIR = os.path.join(os.path.dirname(__file__), 't')
     def GET(self):
         if db is None:
             web.header('content-type', 'text/html')
             return ('MongoDB connection is not available.'
                     ' Make sure mongos is running on this host.')
 
-        jobs = [storify(j) for j in db.jobconfs.find()]
+        errors = None
+        try:
+            jobs = [storify(j) for j in db.jobconfs.find()]
+        except pymongo.errors.PyMongoError, ex:
+            errors = [
+                "%s (mongo=%s)" % (ex, hqconfig.get('mongo'))
+                ]
+            jobs = []
 
         db.connection.end_request()
         
         web.header('content-type', 'text/html')
-        return self.render('status', jobs)
+        return self.render('status', jobs, errors)
 
 class Query:
     def __init__(self):

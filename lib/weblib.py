@@ -13,15 +13,21 @@ def lref(name):
     # note: SCRIPT_FILENAME under lighttpd is broken. you'd need
     # to create a symbolic link from /var/www
     if 'SCRIPT_FILENAME' not in web.ctx.environ:
-        return os.path.join(sys.path[0], name)
-    path = web.ctx.environ['SCRIPT_FILENAME']
+        path = __file__
+        logging.warn('SCRIPT_FILENAME not in environ,'
+                     ' using __file__=%s instead', path)
+    else:
+        path = web.ctx.environ['SCRIPT_FILENAME']
     return os.path.join(os.path.dirname(path), name)
 
 class BaseApp(object):
-    def __init__(self):
+    def __init__(self, tmpldir=None):
         tglobals = dict(format=format)
         try:
-            tmpldir = web.ctx.environ.get('TMPLDIR') or lref('t')
+            if not tmpldir:
+                tmpldir = (web.ctx.environ.get('TMPLDIR') or
+                           getattr(self, 'TMPLDIR', None) or
+                           lref('t'))
             self.templates = web.template.render(tmpldir, globals=tglobals)
         except:
             logging.critical('BaseApp.__init__ failed', exc_info=1)

@@ -1,4 +1,4 @@
-$def with(jobs)
+$def with(jobs, errors)
 <html>
 <head>
 <title>Crawl Headquarters</title>
@@ -22,6 +22,9 @@ td.n { text-align: right; }
 <body>
 <h1>Crawl Headquarters</h1>
 <div>
+$if errors:
+  $for e in errors:
+    <div class="error">${e}</div>
 <h2>Jobs (${len(jobs)})</h2>
 $for i, j in enumerate(jobs):
   <div class="job" jobname="${j.name}">

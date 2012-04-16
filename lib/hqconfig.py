@@ -5,7 +5,7 @@ from configobj import ConfigObj
 from mongojobconfigs import JobConfigs
 
 # HQ installation directory
-HQHOME = os.path.abspath(os.path.join(os.path.dirname('__file__'), '..'))
+HQHOME = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
 # 255 worksets
 NWORKSETS_BITS = 8
@@ -46,8 +46,8 @@ def configobj():
     global _configobj
     if _configobj is None:
         _configobj = ConfigObj(DEFAULT_CONFIG)
-        local_configobj = ConfigObj(os.path.join(HQHOME, get('confdir'),
-                                                 'hq.conf'))
+        localconfpath = os.path.join(HQHOME, get('confdir'), 'hq.conf')
+        local_configobj = ConfigObj(localconfpath)
         _configobj.merge(local_configobj)
         # overriding config through env-var (meant for testing)
         envconf = os.environ.get('HQCONF')
@@ -55,6 +55,14 @@ def configobj():
             env_configobj = ConfigObj(envconf.splitlines())
             _configobj.merge(env_configobj)
     return _configobj
+
+def mergeconfig(config):
+    global _config
+    if isinstance(config, list):
+        configobj = ConfigObj(config)
+    elif not isinstance(config, ConfigObj):
+        raise ValueError, 'config must be a ConfigObj'
+    configobj().merge(config)
 
 def get(p, dv=None):
     return configobj().get(p, dv)
