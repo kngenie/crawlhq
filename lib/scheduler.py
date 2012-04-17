@@ -248,7 +248,7 @@ class Scheduler(object):
         r = dict(
             nworksets=self.NWORKSETS,
             )
-        if self.client:
+        if self.clients:
             r['clients'] = dict((i, client.get_status())
                                 for i, client in self.clients.iteritems())
         return r

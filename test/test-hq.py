@@ -58,5 +58,16 @@ class HQTestCase(unittest.TestCase):
         r = hq.app.request('/wide/feed', data=urlencode(dict(name=0)))
         print >>sys.stderr, r
 
+    def testStatus(self):
+        print >>sys.stderr, "testStatus..."
+        r = hq.app.request('/wide/status')
+        #print >>sys.stderr, r
+        assert r.status == '200 OK', r
+        assert r.headers['content-type'] == 'text/json', r
+        data = json.loads(r.data)
+        assert data.get('success') == 1, data
+        assert data.get('r'), data
+        assert data['r'].get('job') == 'wide'
+
 if __name__ == '__main__':
     unittest.main()

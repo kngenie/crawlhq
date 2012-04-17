@@ -161,7 +161,6 @@ class CrawlJob(object):
 
     def get_status(self):
         r = dict(job=self.jobname, oid=id(self))
-        r['seen'] = self.seen and self.seen.get_status()
         r['sch'] = self.scheduler and self.scheduler.get_status()
         r['inq'] = self.inq and self.inq.get_status()
         return r
