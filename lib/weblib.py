@@ -43,7 +43,7 @@ class QueryApp(object):
         if not f: raise web.notfound('bad action %s (no method %s in %s)' % (
                 c, p + c, self))
         r = f(*args)
-        if isinstance(r, dict):
+        if isinstance(r, (dict, list)):
             r = json.dumps(r, check_circular=False, separators=',:') + '\n'
             web.header('content-type', 'text/json')
         return r

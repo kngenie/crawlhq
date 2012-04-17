@@ -128,6 +128,7 @@ class CrawlJob(object):
                                      self.jobname,
                                      mapper=self.mapper,
                                      scheduler=self.scheduler)
+        self.workset_activating = self.dispatcher.workset_activating
 
         self.crawlinfodb = crawlinfo
 

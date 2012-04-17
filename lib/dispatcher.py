@@ -269,7 +269,7 @@ class Dispatcher(object):
         # is it better to move files back into inq directory?
         qfiles = self.diverter.listqfiles(wsid)
         logging.info('re-scheduling %s to inq', str(qfiles))
-        self.inq.rqfile.qfiles_available(qfiles)
+        self.inq.qfiles_available(qfiles)
 
     def workset_deactivating(self, wsid):
         """deactivates working set wsid; start sending CURIs into
