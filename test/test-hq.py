@@ -7,6 +7,7 @@ import unittest
 import json
 import subprocess
 from urllib import urlencode
+import time
 
 DATADIR = '/tmp/hq'
 if not os.path.isdir(DATADIR):
@@ -27,9 +28,42 @@ class HQTestCase(unittest.TestCase):
         print >>sys.stderr, "removing %s/*..." % DATADIR
         subprocess.check_call('/bin/rm -rf %s/*' % DATADIR, shell=1)
 
-    def testDiscovered(self):
+    def testDiscoveredAndProcessinq(self):
+        print >>sys.stderr, "testDiscoveredAndProcessinq..."
+        # put several CURLs into inq
+        data = [dict(u='http://archive.org/%s' % n,
+                     p='L',
+                     v='http://www.archive.org/',
+                     x='a/@href') for n in range(10)]
+        r = hq.app.request('/wide/mdiscovered', method='POST',
+                           data=json.dumps(data))
+        assert r.status == '200 OK', r
+        result = json.loads(r.data)
+        assert result.get('processed') == len(data), r
+        assert type(result.get('t')) == float
+
+        r = hq.app.request('/wide/flush')
+        time.sleep(2.0)
+        r = hq.app.request('/wide/flush')
+        time.sleep(2.0)
+
+        r = hq.app.request('/wide/processinq?' + urlencode(dict(max=100)))
+        assert r.status == '200 OK', r
+        assert r.headers['content-type'] == 'text/json', r
+        result = json.loads(r.data)
+        assert result.get('job') == 'wide', result
+        assert result.get('max') == 100, result
+        assert result.get('processed') == len(data), result
+        # there's no active client. test with active client is done
+        # in test-dispatcher.py
+        assert result.get('scheduled') == 0, result
+        assert result.get('saved') == len(data), result
+        assert result.get('excluded') == 0, result
+        assert type(result.get('td')) == float, result
+        assert type(result.get('ts')) == float, result
+                           
         print >>sys.stderr, "testDiscovered..."
-        data = [dict(u='http://archive.org/',
+        data = [dict(u='http://archive.org/d',
                     p='L',
                     v='http://www.archive.org/',
                     x='a/@href')]
@@ -55,7 +89,7 @@ class HQTestCase(unittest.TestCase):
 
     def testFeed(self):
         print >>sys.stderr, "testFeed..."
-        r = hq.app.request('/wide/feed', data=urlencode(dict(name=0)))
+        r = hq.app.request('/wide/feed?' + urlencode(dict(name=0)))
         print >>sys.stderr, r
 
     def testStatus(self):
