@@ -20,7 +20,7 @@ except:
 import hqconfig
 from mongojobconfigs import JobConfigs
 from mongodomaininfo import DomainInfo
-from dispatcher import Dispatcher
+from dispatcher import Dispatcher, WorksetMapper
 from scheduler import Scheduler
 
 DEFAULT_BINDADDR = ('127.0.0.1', 8819)
@@ -37,7 +37,7 @@ opt = OptionParser(usage='%prog [OPTIONS] JOBNAME')
 opt.add_option('-n', action='store', dest='maxn', default=500, type='int',
                help='maximum number of URLs to process (advisory)')
 opt.add_option('-1', action='store_true', dest='justonce', default=False,
-               help="runs processinq just once, then exists"
+               help="runs processinq just once, then exits"
                )
 opt.add_option('-w', action='store', dest='exhaust_delay', default=60,
                type='int',

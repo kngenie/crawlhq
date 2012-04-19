@@ -418,7 +418,7 @@ class ClientAPI(QueryApp, DiscoveredHandler):
         # transient instance for now
         try:
             result.update(hq.get_job(job).processinq(maxn))
-        except HeadquarterException as ex:
+        except Exception as ex:
             logging.exception('processinq failed')
             result.update(error=str(ex))
         result.update(job=job, t=(time.time() - start))
