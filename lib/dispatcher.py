@@ -302,7 +302,6 @@ class Dispatcher(object):
         for count in xrange(maxn):
             t0 = time.time()
             furi = self.inq.get(0.01)
-            print furi
             
             result['td'] += (time.time() - t0)
             if furi is None: break
