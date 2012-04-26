@@ -342,12 +342,18 @@ class FileDequeue(object):
         self.qfile_read = 0
         self.dequeuecount = 0
 
+        # for status reporting
+        self.qfile = None
+        self.qfilestep = None
+
     def get_status(self):
         r = dict(reader=(self.rqfile and hasattr(self.rqfile, 'get_status')
                          and self.rqfile.get_status()),
                  queuefilecount=self.qfile_count(),
                  queuefilereadcount=self.qfile_read,
-                 dequeuecount=self.dequeuecount
+                 dequeuecount=self.dequeuecount,
+                 qfile=self.qfile,
+                 qfilestep=self.qfilestep
                  )
         return r
 
@@ -390,26 +396,31 @@ class FileDequeue(object):
     def next_rqfile(self, timeout=0.0):
         '''blocks until next qfile becomes available'''
         #print >>sys.stderr, "next_rqfile timeout=%.3f" % timeout
+        self.qfile = None
+        self.qfilestep = "next"
         remaining_timeout = timeout
         pause = 0.0
         while 1:
             if self.rqfiles:
                 f = self.rqfiles.pop(0)
                 if f.startswith('/'):
-                    qpath = f
+                    self.qfile = f
                 else:
-                    qpath = os.path.join(self.qdir, f)
-                logging.debug("opening %s", qpath)
-                with timelog('open %s' % qpath, warn=2.0):
+                    self.qfile = os.path.join(self.qdir, f)
+                logging.debug("opening %s", self.qfile)
+                with timelog('open %s' % self.qfile, warn=2.0):
                     try:
+                        self.qfilestep = "initializing"
                         self.rqfile = self.reader(
-                            qpath,
+                            self.qfile,
                             noupdate=self.noupdate
                             )
+                        self.qfilestep = "dispensing"
                     except mmap.error as ex:
                         if ex.errno == 22:
                             # empty file
-                            os.remove(qpath)
+                            os.remove(self.qfile)
+                            self.qfilestep = "error_removed"
                             continue
                         else:
                             raise
