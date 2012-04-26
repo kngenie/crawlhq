@@ -124,20 +124,19 @@ class CrawlJob(object):
 
         self.domaininfo = domaininfo
 
-        self.dispatcher = Dispatcher(self.domaininfo,
-                                     self.jobname,
-                                     mapper=self.mapper,
-                                     scheduler=self.scheduler)
-        self.workset_activating = self.dispatcher.workset_activating
-
-        self.crawlinfodb = crawlinfo
-
-        # self.inq = HashSplitIncomingQueue(
-        #     qdir=hqconfig.inqdir(self.jobname),
-        #     buffsize=500)
         self.inq = PooledIncomingQueue(
             qdir=hqconfig.inqdir(self.jobname),
             buffsize=1000)
+
+        self.dispatcher = Dispatcher(self.domaininfo,
+                                     self.jobname,
+                                     mapper=self.mapper,
+                                     scheduler=self.scheduler,
+                                     inq=self.inq.rqfile)
+
+        self.workset_activating = self.dispatcher.workset_activating
+
+        self.crawlinfodb = crawlinfo
 
         # currently disabled by default - too slow
         self.use_crawlinfo = False
@@ -156,8 +155,6 @@ class CrawlJob(object):
         self.inq.close()
         logging.info("shutting down dispatcher")
         self.dispatcher.shutdown()
-        logging.info("shutting down crawlinfo")
-        self.crawlinfodb.shutdown()
         logging.info("done.")
 
     def get_status(self):
@@ -237,21 +234,27 @@ class Headquarters(object):
     def __init__(self):
         self.jobs = {}
         self.jobslock = threading.RLock()
-        # single shared CrawlInfo database
-        # named 'wide' for historical reasons.
-        self.crawlinfo = CrawlInfo('wide')
         mongoserver = hqconfig.get('mongo')
         logging.warn('using MongoDB: %s', mongoserver)
         self.mongo = pymongo.Connection(mongoserver)
         self.configdb = self.mongo.crawl
+        # single shared CrawlInfo database
+        # named 'wide' for historical reasons.
+        #self.crawlinfo = CrawlInfo(self.configdb, 'wide')
+        self.crawlinfo = None # disabled for performance reasons
         self.domaininfo = DomainInfo(self.configdb)
         self.jobconfigs = JobConfigs(self.configdb)
         self.coordinator = Coordinator(hqconfig.get('zkhosts'))
 
     def shutdown(self):
         for job in self.jobs.values():
+            logging.info("shutting down job %s", job)
             job.shutdown()
+        logging.info("shutting down domaininfo")
         self.domaininfo.shutdown()
+        if self.crawlinfo:
+            logging.info("shutting down crawlinfo")
+            self.crawlinfo.shutdown()
         self.configdb = None
         self.mongo.disconnect()
 

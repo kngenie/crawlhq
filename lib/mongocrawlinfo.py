@@ -2,20 +2,19 @@ import sys
 import os
 import pymongo
 import urihash
+import hqconfig
 
 class CrawlInfo(object):
     '''database of re-crawl infomation. keeps fetch result from previous
        crawl and makes it available in next cycle. this version uses MongoDB.'''
-    def __init__(self, jobname):
+    def __init__(self, db, jobname):
         self.jobname = jobname
-        self.mongo = pymongo.Connection(host='crawl401')
-        self.db = self.mongo.crawl
+        self.db = db
         self.coll = self.db.seen[self.jobname]
         
     def shutdown(self):
         self.coll = None
         self.db = None
-        self.mongo.disconnect()
 
     def countitems(self):
         return self.coll.count()

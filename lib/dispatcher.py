@@ -205,7 +205,7 @@ class Dispatcher(object):
 
     # TODO: take JobConfig, instead of job
     def __init__(self, domaininfo, job, mapper,
-                 scheduler):
+                 scheduler, inq=None):
         self.domaininfo = domaininfo
         self.jobname = job
         self.mapper = mapper
@@ -213,7 +213,9 @@ class Dispatcher(object):
 
         # TODO: inject these objects from outside
         qdir = hqconfig.inqdir(self.jobname)
-        self.inq = FileDequeue(qdir, reader=FPSortingQueueFileReader)
+        self.inq = inq
+        if self.inq is None:
+            self.inq = FileDequeue(qdir, reader=FPSortingQueueFileReader)
         self.seen = Seen(dbdir=hqconfig.seendir(self.jobname))
         self.diverter = Diverter(self.jobname, self.mapper)
         self.excludedlist = ExcludedList(self.jobname)
