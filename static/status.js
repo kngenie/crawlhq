@@ -79,7 +79,8 @@ function renderstatus(resp, status, xhr) {
   if (inq) {
     var inqdiv = jQuery('<div>');
     var in_text = 'in=' + with_comma(inq.addedcount);
-    var out_text = 'out=' + with_comma(inq.processedcount);
+    var dequeuecount = inq.dequeue && inq.dequeue.dequeuecount || 0;
+    var out_text = 'out=' + with_comma(dequeuecount);
     var nq_text = 'nqfiles=' + with_comma(inq.queuefilecount);
     var now = (new Date()).getTime();
     var elapsed_ms = now - last_status_update;
@@ -88,7 +89,7 @@ function renderstatus(resp, status, xhr) {
       if (in_speed >= 0 && in_speed < 1000000) {
         in_text += ' (' + (Math.floor(in_speed * 10)/10) + ' URI/s)';
       }
-      var out_speed = (inq.processedcount - last_inq_out) / (elapsed_ms / 1000);
+      var out_speed = (dequeuecount - last_inq_out) / (elapsed_ms / 1000);
       if (out_speed >= 0 && out_speed < 100000) {
         out_text += ' (' + (Math.floor(out_speed * 10)/10) + ' URI/s)';
       }
@@ -97,7 +98,7 @@ function renderstatus(resp, status, xhr) {
 		  ', ' + nq_text);
     last_status_update = now;
     last_inq_in = inq.addedcount;
-    last_inq_out = inq.processedcount;
+    last_inq_out = dequeuecount;
     d.append(inqdiv);
   }
   var sch = data.sch;
