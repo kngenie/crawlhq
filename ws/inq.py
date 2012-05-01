@@ -28,6 +28,7 @@ class CrawlJob(object):
         self.jobconfig = jobconfig
         self.enq = FileEnqueue(qdir=hqconfig.inqdir(self.jobconfig.name),
                                suffix=os.getpid(),
+                               maxsize=100*1000*1000,
                                buffer=1000,
                                executor=None,
                                gzip=9)
