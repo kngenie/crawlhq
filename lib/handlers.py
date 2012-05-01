@@ -1,4 +1,5 @@
 # HTTP handlers mix-in
+import os
 import web
 import time
 import json
@@ -82,5 +83,5 @@ class DiscoveredHandler(object):
     def do_flush(self, job):
         '''flushes cached objects into database for safe shutdown'''
         self.hq.get_job(job).flush()
-        r = dict(ok=1)
+        r = dict(ok=1, worker=os.getpid())
         return r

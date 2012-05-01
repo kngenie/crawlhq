@@ -84,7 +84,11 @@ class ClientAPI(QueryApp, DiscoveredHandler):
 
     def do_testinq(self, job):
         """test method for checking if URL mapping is configured correctly."""
+        env = web.ctx.env
         r = dict(ok=1, job=job, pid=os.getpid())
+        r['env'] = dict((k, web.ctx.env.get(k)) for k in (
+                'SCRIPT_NAME', 'PATH_TRANSLATED', 'SCRIPT_FILENAME',
+                'SCRIPT_URI', 'REQUEST_URI'))
         return r
             
 logging.basicConfig(level=logging.WARN)
