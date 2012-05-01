@@ -11,6 +11,9 @@ AliasMatch ^/hq/(.*\.(css|js|html|gif|png|jpg)) /opt/hq/static/$1
 RewriteEngine On
 RewriteRule ^/hq/jobs/([^/]+/(m?discovered|testinq)) /hq/inq/$1 [PT,L]
 
+<Location /hq>
+WSGIProcessGroup hqstatus
+</Location>
 <Location /hq/jobs>
 WSGIProcessGroup headquarters
 </Location>
@@ -19,9 +22,6 @@ AddOutputFilterByType DEFLATE text/json
 </IfModule>
 <Location /hq/inq>
 WSGIProcessGroup hqinq
-</Location>
-<Location /hq>
-WSGIProcessGroup hqstatus
 </Location>
 <Directory /opt/hq/ws>
     Order allow,deny
