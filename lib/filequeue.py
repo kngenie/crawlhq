@@ -305,9 +305,11 @@ class QueueFileReader(object):
         while 1:
             try:
                 l = self.z.readline()
-            except IOError as ex:
+            except Exception as ex:
                 # probably CRC error due to truncated file. discard the rest.
-                # should we keep the file for later diagnosis?
+                # should we keep the file for later diagnosis? we can get
+                # IOError from gzip, as well as zlib.error for lower level
+                # problems.
                 logging.error('error in %s: %s', self.fn, str(ex))
                 raise StopIteration
             if l == '': break
