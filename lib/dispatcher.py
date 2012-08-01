@@ -33,6 +33,8 @@ class WorksetMapper(object):
         h = uc.netloc
         p = h.find(':')
         if p > 0: h = h[:p]
+        if isinstance(h, unicode):
+            h = h.encode('utf-8')
         # Note: don't use % (mod) - FP hash much less even distribution in
         # lower bits.
         hosthash = int(self._fp31.fp(h) >> (64 - self.nworksets_bits))
