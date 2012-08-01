@@ -11,11 +11,7 @@ import json
 import time
 import re
 import itertools
-from gzip import GzipFile
-from cStringIO import StringIO
-from urlparse import urlsplit, urlunsplit
 import threading
-import random
 from Queue import Queue, Empty, Full, LifoQueue
 import atexit
 import logging
@@ -33,6 +29,7 @@ import urihash
 from dispatcher import WorksetMapper, Dispatcher, FPSortingQueueFileReader
 from seen import Seen
 from weblib import QueryApp
+import rcom
 from handlers import *
 
 class CrawlMapper(WorksetMapper):
@@ -128,13 +125,11 @@ class CrawlJob(object):
             qdir=hqconfig.inqdir(self.jobname),
             buffsize=1000)
 
-        self.dispatcher = Dispatcher(self.domaininfo,
-                                     self.jobname,
-                                     mapper=self.mapper,
-                                     scheduler=self.scheduler,
-                                     inq=self.inq.rqfile)
-
-        self.workset_activating = self.dispatcher.workset_activating
+        self._dispatcher_mode = hqconfig.get(
+            ('jobs', self.jobname, 'dispatcher'), 'internal')
+                                            
+        self.dispatcher = None
+        #self.init_dispatcher()
 
         self.crawlinfodb = crawlinfo
 
@@ -145,7 +140,33 @@ class CrawlJob(object):
         self.last_inq_count = 0
 
     PARAMS = [('use_crawlinfo', bool),
-              ('save_crawlinfo', bool)]
+              ('save_crawlinfo', bool),
+              ('dispatcher_mode', str)]
+
+    @property
+    def dispatcher_mode(self):
+        return self._dispatcher_mode
+    @dispatcher_mode.setter
+    def dispatcher_mode(self, value):
+        self._dispatcher_mode = value
+        if value == 'external':
+            self.shutdown_dispatcher()
+
+    def init_dispatcher(self):
+        if self.dispatcher: return
+        if self.dispatcher_mode == 'external':
+            raise RuntimeError, 'dispatcher mode is %s' % self.dispatcher_mode
+        self.dispatcher = Dispatcher(self.domaininfo,
+                                     self.jobname,
+                                     mapper=self.mapper,
+                                     scheduler=self.scheduler,
+                                     inq=self.inq.rqfile)
+        
+    def shutdown_dispatcher(self):
+        if not self.dispatcher: return
+        logging.info("shutting down dispatcher")
+        self.dispatcher.shutdown()
+        self.dispatcher = None
 
     def shutdown(self):
         logging.info("shutting down scheduler")
@@ -153,8 +174,7 @@ class CrawlJob(object):
         logging.info("closing incoming queues")
         self.inq.flush()
         self.inq.close()
-        logging.info("shutting down dispatcher")
-        self.dispatcher.shutdown()
+        self.shutdown_dispatcher()
         logging.info("done.")
 
     def get_status(self):
@@ -170,6 +190,10 @@ class CrawlJob(object):
             r['worksets'] = self.scheduler.get_workset_status()
         return r
         
+    def workset_activating(self, *args):
+        self.init_dispatcher()
+        self.dispatcher.workset_activating(*args)
+
     def schedule(self, curis):
         '''schedule curis bypassing seen-check. typically used for starting
            new crawl cycle.'''
@@ -183,6 +207,7 @@ class CrawlJob(object):
         return self.inq.add(curis)
 
     def processinq(self, maxn):
+        self.init_dispatcher()
         return self.dispatcher.processinq(maxn)
 
     def makecuri(self, o):
@@ -293,17 +318,6 @@ class Headquarters(object):
 hq = Headquarters()
 #atexit.register(executor.shutdown)
 atexit.register(hq.shutdown)
-
-def parse_bool(s):
-    s = s.lower()
-    if s == 'true': return True
-    if s == 'false': return False
-    try:
-        i = int(s)
-        return bool(i)
-    except ValueError:
-        pass
-    return bool(s)
 
 class ClientAPI(QueryApp, DiscoveredHandler):
 
@@ -517,35 +531,22 @@ class ClientAPI(QueryApp, DiscoveredHandler):
 
     def do_param(self, job):
         p = web.input(value=None, name='')
-        name = p.name
-        nc = name.split('.')
-        if len(nc) != 2:
-            return dict(success=0, error='bad parameter name', name=name)
-        on, pn = nc
-        j = hq.get_job(job)
-        o = dict(scheduler=j.scheduler, inq=j.inq, hq=hq, job=j).get(on)
-        if o is None:
-            return dict(success=0, error='no such object', name=name)
-        params = o.PARAMS
-        pe = None
-        for d in params:
-            if d[0] == pn:
-                pe = d
-                break
-        if pe is None:
-            return dict(success=0, error='no such parameter', name=name)
-        r = dict(success=1, name=name, v=getattr(o, pe[0], None))
-        if p.value is not None:
-            r['value'] = p.value
-            conv = pe[1]
-            if conv == bool: conv = parse_bool
+        m = rcom.Model(dict(
+                scheduler=j.scheduler, inq=j.inq, hq=hq, job=j))
+        # XXX we cannot set None to an attribute
+        if p.value is None:
             try:
-                r['nv'] = conv(p.value)
-                setattr(o, pe[0], r['nv'])
-            except ValueError:
-                r.update(success=0, error='bad value')
-            except AttributeError as ex:
-                r.update(success=0, error=str(ex), o=str(o), a=pe[0])
+                return dict(success=1, name=name, v=m.get_property(p.name))
+            except Exception, ex:
+                return dict(success=0, name=name, error=str(ex))
+        else:
+            try:
+                nv, ov = m.set_property(p.name, p.value)
+                return dict(success=1, name=name, value=p.value,
+                            v=ov, nv=nv)
+            except Exception, ex:
+                return dict(success=0, name=name, value=p.value,
+                            error=str(ex))
         logging.info("param: %s", r)
         return r
 

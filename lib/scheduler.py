@@ -290,7 +290,7 @@ class Scheduler(object):
         clq = self.get_clientqueue(client)
         if not clq.is_active():
             self.mapper.client_activating(client)
-        curis = self.get_clientqueue(client).feed(n)
+        curis = clq.feed(n)
         return curis
 
     def lastfeedtime(self, clid):

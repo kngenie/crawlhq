@@ -65,7 +65,16 @@ def mergeconfig(config):
     configobj().merge(config)
 
 def get(p, dv=None):
-    return configobj().get(p, dv)
+    if isinstance(p, basestring):
+        return configobj().get(p, dv)
+    if isinstance(p, (list, tuple)):
+        m = configobj()
+        for e in p:
+            if not hasattr(m, 'get'): return dv
+            m = m.get(e)
+            if m is None: return dv
+        return m
+    raise ValueError, 'bad key: %s' % p
 
 # def __getitem__(p):
 #     return configobj().get(p, None)

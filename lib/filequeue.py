@@ -365,7 +365,8 @@ class FileDequeue(object):
             self.rqfile = None
 
     def qfile_count(self):
-        return len(self.rqfiles)
+        # now includes a qfile being read
+        return len(self.rqfiles)+(1 if self.rqfile is not None else 0)
 
     def qfiles_available(self, qfiles):
         self.rqfiles.extend(qfiles)

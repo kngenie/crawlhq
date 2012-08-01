@@ -216,7 +216,9 @@ class Dispatcher(object):
         self.inq = inq
         if self.inq is None:
             self.inq = FileDequeue(qdir, reader=FPSortingQueueFileReader)
-        self.seen = Seen(dbdir=hqconfig.seendir(self.jobname))
+        # seen database is initialized lazily
+        #self.seen = Seen(dbdir=hqconfig.seendir(self.jobname))
+        self.seen = None
         self.diverter = Diverter(self.jobname, self.mapper)
         self.excludedlist = ExcludedList(self.jobname)
 
@@ -230,8 +232,10 @@ class Dispatcher(object):
 
     def shutdown(self):
         #if self.job: self.job.shutdown()
-        logging.info("closing seen db")
-        self.seen.close()
+        if self.seen:
+            logging.info("closing seen db")
+            self.seen.close()
+            self.seen = None
         # logging.info("shutting down scheduler")
         # self.scheduler.shutdown()
         logging.info("shutting down diverter")
