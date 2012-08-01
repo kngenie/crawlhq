@@ -16,7 +16,6 @@ import collections
 import hqconfig
 #from mongocrawlinfo import CrawlInfo
 from zkcoord import Coordinator
-from configobj import ConfigObj
 from weblib import BaseApp, QueryApp
 
 from mongojobconfigs import JobConfigs
@@ -51,6 +50,7 @@ class ServerChannel(object):
                  bufferedcount=len(self.discovered_buffer),
                  running=self.running,
                  flushing=self.flushing)
+        return r
                                    
     def _flusher_main(self):
         while self.running:
@@ -61,6 +61,7 @@ class ServerChannel(object):
                     continue
                 b = self.discovered_buffer
                 self.discovered_buffer = []
+                self.discovered_canput.notify()
             try:
                 self.flushing = True
                 self._flush(b)
@@ -78,7 +79,9 @@ class ServerChannel(object):
                               body)
             try:
                 res = self.http.getresponse()
-                if res.status == 200: break
+                data = res.read()
+                if res.status == 200:
+                    break
                 logging.warn('%s:mdiscovered failed with %s %s',
                              self.host, res.status, res.reason)
             except:
@@ -87,7 +90,8 @@ class ServerChannel(object):
             with self.discovered_lock:
                 self.discovered_buffer.extend(b)
             logging.warn('retrying after 1 minute')
-            self.sleeper.wait(60.0)
+            with self.sleeper:
+                self.sleeper.wait(60.0)
             
     def discovered(self, curi):
         with self.discovered_lock:
@@ -119,6 +123,9 @@ class Distributor(object):
             for c in cs:
                 self.client_server[str(c)] = ch
             
+    def get_status(self):
+        return [ch.get_status() for ch in self.channels]
+            
     def get_client(self, curi):
         wsid = self.mapper.workset(curi)
         return self.wscl[wsid]
@@ -129,9 +136,12 @@ class Distributor(object):
         return channel
         
     def discovered(self, curis):
+        result = collections.defaultdict(int)
         for curi in curis:
             ch = self.get_server_channel(curi)
             ch.discovered(curi)
+            result[ch.host] += 1
+        return result
 
 class QuarterMaster(object):
     def __init__(self):
@@ -218,10 +228,15 @@ class JobActions(QueryApp):
             return result
 
         dist = master.get_distributor(job)
-        dist.discovered(curis)
-        result.update(processed=len(curis))
+        r = dist.discovered(curis)
+        result.update(processed=len(curis), servers=r)
 
         return result
+
+    def do_status(self, job):
+        dist = master.get_distributor(job)
+        r = dist.get_status()
+        return r
 
     def do_locate(self, job):
         p = web.input(url=None)
@@ -239,4 +254,3 @@ urls = (
 web.config.debug = True
 app = web.application(urls, globals())
 application = app.wsgifunc()
-
