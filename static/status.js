@@ -102,8 +102,8 @@ function renderstatus(resp, status, xhr) {
     }
     inqdiv.append('IncomingQueue: ' + in_text +
 		  ' | ' + bf_text +
-		  ' | ' + nq_text + ', ' + qfile_text
-		  ' | ' + out_text +
+		  ' | ' + nq_text + ', ' + qfile_text +
+		  ' | ' + out_text
 		 );
     last_status_update = now;
     last_inq_in = inq.addedcount;
