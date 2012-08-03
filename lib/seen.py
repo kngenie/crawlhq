@@ -19,6 +19,7 @@ class Seen(object):
         self._open()
         self.ready.set()
         self.putqueue = Queue(1000)
+        self.memhash = {}
         self.drainlock = threading.RLock()
 
         self.addedcount = 0
@@ -38,6 +39,8 @@ class Seen(object):
 
     def _open(self):
         logging.info("opening seen-db %s", self.dbdir)
+        if not os.path.isdir(self.dbdir):
+            os.makedirs(self.dbdir)
         self.seendb = leveldb.IntHash(self.dbdir,
                                       block_cache_size=self.block_cache_size,
                                       block_size=4096,
@@ -97,17 +100,21 @@ class Seen(object):
                 while 1:
                     key = self.putqueue.get_nowait()
                     self.seendb.put(key, '1')
+                    del self.memhash[key]
             except Empty:
                 pass
 
     def already_seen(self, furi):
         self.ready.wait()
         key = furi.get('id') or urihash.urikey(furi['u'])
+        if key in self.memhash:
+            return {'_id': key, 'e': self.memhash[key]}
         v = self.seendb.get(key)
         if not v:
             #self.seendb.put(key, '1')
             while 1:
                 try:
+                    self.memhash[key] = self.EXPIRE_NEVER
                     self.putqueue.put_nowait(key)
                     self.addedcount += 1
                     break

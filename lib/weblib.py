@@ -13,15 +13,21 @@ def lref(name):
     # note: SCRIPT_FILENAME under lighttpd is broken. you'd need
     # to create a symbolic link from /var/www
     if 'SCRIPT_FILENAME' not in web.ctx.environ:
-        return os.path.join(sys.path[0], name)
-    path = web.ctx.environ['SCRIPT_FILENAME']
+        path = __file__
+        logging.warn('SCRIPT_FILENAME not in environ,'
+                     ' using __file__=%s instead', path)
+    else:
+        path = web.ctx.environ['SCRIPT_FILENAME']
     return os.path.join(os.path.dirname(path), name)
 
 class BaseApp(object):
-    def __init__(self):
+    def __init__(self, tmpldir=None):
         tglobals = dict(format=format)
         try:
-            tmpldir = web.ctx.environ.get('TMPLDIR') or lref('t')
+            if not tmpldir:
+                tmpldir = (web.ctx.environ.get('TMPLDIR') or
+                           getattr(self, 'TMPLDIR', None) or
+                           lref('t'))
             self.templates = web.template.render(tmpldir, globals=tglobals)
         except:
             logging.critical('BaseApp.__init__ failed', exc_info=1)
@@ -32,16 +38,18 @@ class BaseApp(object):
         return t(*args)
     
 class QueryApp(object):
-    def _dispatch(self, method, *args):
-        f = getattr(self, method, None)
-        if not f: raise web.notfound('bad action %s on %s' % method)
+    def _dispatch(self, p, c, *args):
+        f = getattr(self, p + c, None)
+        if not f: raise web.notfound('bad action %s (no method %s in %s)' % (
+                c, p + c, self))
         r = f(*args)
-        if isinstance(r, dict):
+        if isinstance(r, (dict, list)):
             r = json.dumps(r, check_circular=False, separators=',:') + '\n'
             web.header('content-type', 'text/json')
         return r
 
     def decode_content(self, data):
+        """decod if content is gzipped"""
         if web.ctx.env.get('HTTP_CONTENT_ENCODING') == 'gzip':
             ib = StringIO(data)
             zf = GzipFile(fileobj=ib)
@@ -49,8 +57,8 @@ class QueryApp(object):
         else:
             return data
             
-    def GET(self, c):
-        return self._dispatch('do_'+c)
-    def POST(self, c):
-        return self._dispatch('post_'+c)
-        
+    def GET(self, c, *args):
+        return self._dispatch('do_', c, *args)
+    def POST(self, c, *args):
+        return self._dispatch('post_', c, *args)
+    

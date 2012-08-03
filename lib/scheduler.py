@@ -13,7 +13,7 @@ import logging
 
 class WorkSet(object):
 
-    def __init__(self, wsdir, wsid, writing=False):
+    def __init__(self, wsdir, wsid, writing=False, reading=True):
         self.wsid = wsid
 
         self.qdir = os.path.join(wsdir, str(self.wsid))
@@ -23,7 +23,11 @@ class WorkSet(object):
             self.enq = FileEnqueue(self.qdir, buffer=200)
         else:
             self.enq = DummyFileEnqueue(self.qdir)
-        self.deq = FileDequeue(self.qdir)
+        if reading:
+            self.deq = FileDequeue(self.qdir)
+        else:
+            # dummy?
+            self.deq = None
 
         self.running = True
 
@@ -39,7 +43,8 @@ class WorkSet(object):
         
     def shutdown(self):
         self.flush()
-        self.deq.close()
+        if self.deq:
+            self.deq.close()
 
     def get_status(self):
         r = dict(id=self.wsid, running=self.running,
@@ -212,7 +217,8 @@ class ClientQueue(object):
 class Scheduler(object):
     '''per job scheduler. manages assignment of worksets to each client.'''
     
-    def __init__(self, wsdir, mapper, client_active_timeout=10*3600):
+    def __init__(self, wsdir, mapper, client_active_timeout=10*3600,
+                 writing=True, reading=True):
         """client_active_timeout: max time client remains active without
         feeding (in seconds)
         """
@@ -223,8 +229,14 @@ class Scheduler(object):
         self.NWORKSETS = self.mapper.nworksets
         self.clients = {}
 
-        self.worksets = [WorkSet(wsdir, wsid, writing=True)
+        self.worksets = [WorkSet(wsdir, wsid, writing=writing, reading=reading)
                          for wsid in xrange(self.NWORKSETS)]
+
+    def flush(self):
+        r = []
+        for ws in self.worksets:
+            if ws.flush(): r.append(ws.wsid)
+        return r
 
     def shutdown(self):
         for ws in self.worksets:
@@ -235,18 +247,17 @@ class Scheduler(object):
     def get_status(self):
         r = dict(
             nworksets=self.NWORKSETS,
-            clients={}
             )
-        for i, client in self.clients.items():
-            r['clients'][i] = client.get_status()
+        if self.clients:
+            r['clients'] = dict((i, client.get_status())
+                                for i, client in self.clients.iteritems())
         return r
 
     def get_workset_status(self):
         r = [ws.get_status() for ws in self.worksets]
         return r
 
-    def get_clientqueue(self, client):
-        clid = client[0]
+    def get_clientqueue(self, clid):
         q = self.clients.get(clid)
         if q is None:
             worksets = [self.worksets[i]
@@ -278,8 +289,8 @@ class Scheduler(object):
     def feed(self, client, n):
         clq = self.get_clientqueue(client)
         if not clq.is_active():
-            self.mapper.client_activating(client[0])
-        curis = self.get_clientqueue(client).feed(n)
+            self.mapper.client_activating(client)
+        curis = clq.feed(n)
         return curis
 
     def lastfeedtime(self, clid):
@@ -306,3 +317,4 @@ class Scheduler(object):
             self.worksets[wsid].flush()
         else:
             logging.debug('wsid out of range: %d', wsid)
+                 

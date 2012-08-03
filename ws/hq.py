@@ -11,13 +11,8 @@ import json
 import time
 import re
 import itertools
-from gzip import GzipFile
-from cStringIO import StringIO
-from urlparse import urlsplit, urlunsplit
 import threading
-import random
 from Queue import Queue, Empty, Full, LifoQueue
-import traceback
 import atexit
 import logging
 
@@ -28,52 +23,17 @@ from scheduler import Scheduler
 from executor import *
 from zkcoord import Coordinator
 #from mongodomaininfo import DomainInfo
-from mongojobconfigs import JobConfigs
 from mongocrawlinfo import CrawlInfo
+from mongojobconfigs import JobConfigs
 import urihash
-from dispatcher import WorksetMapper
+from dispatcher import WorksetMapper, Dispatcher, FPSortingQueueFileReader
 from seen import Seen
-from diverter import Diverter
-
-urls = (
-    '/(.*)/(.*)', 'ClientAPI',
-    )
-app = web.application(urls, globals())
-
-class PooledIncomingQueue(IncomingQueue):
-    def init_queues(self, n=5, buffsize=0, maxsize=1000*1000*1000):
-        maxsize = maxsize / n
-        self.write_executor = ThreadPoolExecutor(poolsize=1, queuesize=100)
-        #self.rqfile = FileDequeue(self.qdir, reader=FPSortingQueueFileReader)
-        self.rqfile = DummyFileDequeue(self.qdir)
-        self.qfiles = [FileEnqueue(self.qdir, suffix=str(i),
-                                   maxsize=maxsize,
-                                   buffer=buffsize,
-                                   executor=self.write_executor)
-                       for i in range(n)]
-        self.avail = LifoQueue()
-        for q in self.qfiles:
-            self.avail.put(q)
-
-    def add(self, curis):
-        processed = 0
-        t0 = time.time()
-        enq = self.avail.get()
-        t = time.time() - t0
-        if t > 0.1: logging.warn('self.avail.get() %.4f', t)
-        try:
-            enq.queue(curis)
-            self.addedcount += len(curis)
-            processed += len(curis)
-            return dict(processed=processed)
-        finally:
-            t0 = time.time()
-            self.avail.put(enq)
-            t = time.time() - t0
-            if t > 0.1: logging.warn('slow self.avail.put() %.4f', t)
+from weblib import QueryApp
+import rcom
+from handlers import *
 
 class CrawlMapper(WorksetMapper):
-    """maps client queue id to set of Worksets
+    """maps client queue id to set of WorkSets
     """
     def __init__(self, crawljob, nworksets_bits):
         super(CrawlMapper, self).__init__(nworksets_bits)
@@ -115,29 +75,64 @@ class CrawlMapper(WorksetMapper):
         for wsid in self.wsidforclient(clid):
             self.crawljob.workset_activating(wsid)
 
+class PooledIncomingQueue(IncomingQueue):
+    def init_queues(self, n=5, buffsize=0, maxsize=1000*1000*1000):
+        maxsize = maxsize / n
+        self.write_executor = ThreadPoolExecutor(poolsize=1, queuesize=100)
+        self.rqfile = FileDequeue(self.qdir, reader=FPSortingQueueFileReader)
+        #self.rqfile = DummyFileDequeue(self.qdir)
+        self.qfiles = [FileEnqueue(self.qdir, suffix=str(i),
+                                   maxsize=maxsize,
+                                   buffer=buffsize,
+                                   executor=self.write_executor)
+                       for i in range(n)]
+        self.avail = LifoQueue()
+        for q in self.qfiles:
+            self.avail.put(q)
+
+    def shutdown(self):
+        super(PooledIncomingQueue, self).shutdown()
+        self.write_executor.shutdown()
+
+    def add(self, curis):
+        processed = 0
+        t0 = time.time()
+        enq = self.avail.get()
+        t = time.time() - t0
+        if t > 0.1: logging.warn('self.avail.get() %.4f', t)
+        try:
+            enq.queue(curis)
+            self.addedcount += len(curis)
+            processed += len(curis)
+            return dict(processed=processed)
+        finally:
+            t0 = time.time()
+            self.avail.put(enq)
+            t = time.time() - t0
+            if t > 0.1: logging.warn('slow self.avail.put() %.4f', t)
+
 class CrawlJob(object):
-    def __init__(self, jobconfigs, jobname, crawlinfo):
+
+    def __init__(self, jobconfigs, jobname, crawlinfo, domaininfo):
         self.jobconfigs = jobconfigs
         self.jobname = jobname
-        self.mapper = CrawlMapper(self, self.NWORKSETS_BITS)
-        self.workset_state = [0 for i in range(self.mapper.nworksets)]
-
-        # seen-db initialization is delayed until it's actually needed
-        # and never be initialized in distinct process settings.
-        self.seen = None
-        #self.seen = Seen(dbdir=os.path.join(HQ_HOME, 'seen', self.jobname))
-        self.crawlinfodb = crawlinfo
+        self.mapper = CrawlMapper(self, hqconfig.NWORKSETS_BITS)
         self.scheduler = Scheduler(hqconfig.worksetdir(self.jobname),
                                    self.mapper)
 
-        # self.inq = HashSplitIncomingQueue(
-        #     qdir=hqconfig.inqdir(self.jobname),
-        #     buffsize=500)
+        self.domaininfo = domaininfo
+
         self.inq = PooledIncomingQueue(
             qdir=hqconfig.inqdir(self.jobname),
             buffsize=1000)
 
-        self.diverter = Diverter(self.jobname, self.mapper)
+        self._dispatcher_mode = hqconfig.get(
+            ('jobs', self.jobname, 'dispatcher'), 'internal')
+                                            
+        self.dispatcher = None
+        #self.init_dispatcher()
+
+        self.crawlinfodb = crawlinfo
 
         # currently disabled by default - too slow
         self.use_crawlinfo = False
@@ -146,26 +141,45 @@ class CrawlJob(object):
         self.last_inq_count = 0
 
     PARAMS = [('use_crawlinfo', bool),
-              ('save_crawlinfo', bool)]
+              ('save_crawlinfo', bool),
+              ('dispatcher_mode', str)]
+
+    @property
+    def dispatcher_mode(self):
+        return self._dispatcher_mode
+    @dispatcher_mode.setter
+    def dispatcher_mode(self, value):
+        self._dispatcher_mode = value
+        if value == 'external':
+            self.shutdown_dispatcher()
+
+    def init_dispatcher(self):
+        if self.dispatcher: return
+        if self.dispatcher_mode == 'external':
+            raise RuntimeError, 'dispatcher mode is %s' % self.dispatcher_mode
+        self.dispatcher = Dispatcher(self.domaininfo,
+                                     self.jobname,
+                                     mapper=self.mapper,
+                                     scheduler=self.scheduler,
+                                     inq=self.inq.rqfile)
+        
+    def shutdown_dispatcher(self):
+        if not self.dispatcher: return
+        logging.info("shutting down dispatcher")
+        self.dispatcher.shutdown()
+        self.dispatcher = None
 
     def shutdown(self):
         logging.info("shutting down scheduler")
         self.scheduler.shutdown()
-        logging.info("shutting down diverter")
-        self.diverter.shutdown()
-        if self.seen:
-            logging.info("closing seen db")
-            self.seen.close()
         logging.info("closing incoming queues")
         self.inq.flush()
         self.inq.close()
-        logging.info("shutting down crawlinfo")
-        self.crawlinfodb.shutdown()
+        self.shutdown_dispatcher()
         logging.info("done.")
 
     def get_status(self):
         r = dict(job=self.jobname, oid=id(self))
-        r['seen'] = self.seen and self.seen.get_status()
         r['sch'] = self.scheduler and self.scheduler.get_status()
         r['inq'] = self.inq and self.inq.get_status()
         return r
@@ -177,17 +191,10 @@ class CrawlJob(object):
             r['worksets'] = self.scheduler.get_workset_status()
         return r
         
-    #def discovered_async(self, curis):
-    #    return self.inq.add(curis)
+    def workset_activating(self, *args):
+        self.init_dispatcher()
+        self.dispatcher.workset_activating(*args)
 
-    # def get_domaininfo(self, url):
-    #     uc = urlsplit(url)
-    #     host = uc.netloc
-    #     p = host.find(':')
-    #     if p > 0: host = host[:p]
-    #     di = self.domaininfo.get(host)
-    #     return di
-        
     def schedule(self, curis):
         '''schedule curis bypassing seen-check. typically used for starting
            new crawl cycle.'''
@@ -199,22 +206,23 @@ class CrawlJob(object):
 
     def discovered(self, curis):
         return self.inq.add(curis)
-        
+
+    def processinq(self, maxn):
+        self.init_dispatcher()
+        return self.dispatcher.processinq(maxn)
+
     def makecuri(self, o):
         # temporary rescue measure. delete after everything's got fixed.
         if 'a' not in o:
             if 'w' in o:
                 o['a'] = o.pop('w')
             else:
-                a = dict()
-                for k in 'pxv':
-                    if k in o:
-                        a[k] = o.pop(k)
+                a = dict(((k, o.pop(k)) for k in 'pxv' if k in o))
                 if a: o['a'] = a
         return o
 
     def feed(self, client, n):
-        logging.debug('feed %s begin', client)
+        logging.debug('feed "%s" begin', client)
         curis = self.scheduler.feed(client, n)
         # add recrawl info if enabled
         if self.use_crawlinfo and len(curis) > 0 and self.crawlinfodb:
@@ -259,19 +267,27 @@ class Headquarters(object):
     def __init__(self):
         self.jobs = {}
         self.jobslock = threading.RLock()
+        mongoserver = hqconfig.get('mongo')
+        logging.warn('using MongoDB: %s', mongoserver)
+        self.mongo = pymongo.Connection(mongoserver)
+        self.configdb = self.mongo.crawl
         # single shared CrawlInfo database
         # named 'wide' for historical reasons.
-        self.crawlinfo = CrawlInfo('wide')
-        self.mongo = pymongo.Connection(hqconfig.get('mongo'))
-        self.configdb = self.mongo.crawl
+        #self.crawlinfo = CrawlInfo(self.configdb, 'wide')
+        self.crawlinfo = None # disabled for performance reasons
         #self.domaininfo = DomainInfo(self.configdb)
         self.jobconfigs = JobConfigs(self.configdb)
         self.coordinator = Coordinator(hqconfig.get('zkhosts'))
 
     def shutdown(self):
         for job in self.jobs.values():
+            logging.info("shutting down job %s", job)
             job.shutdown()
+        #logging.info("shutting down domaininfo")
         #self.domaininfo.shutdown()
+        if self.crawlinfo:
+            logging.info("shutting down crawlinfo")
+            self.crawlinfo.shutdown()
         self.configdb = None
         self.mongo.disconnect()
 
@@ -281,10 +297,8 @@ class Headquarters(object):
             if job is None:
                 if nocreate and not self.jobconfigs.job_exists(jobname):
                     raise ValueError('unknown job %s' % jobname)
-                # job = self.jobs[jobname] = CrawlJob(
-                #     self.jobconfigs, jobname, self.crawlinfo)
                 job = self.jobs[jobname] = CrawlJob(
-                    self.jobconfigs, jobname, self.crawlinfo)
+                    self.jobconfigs, jobname, self.crawlinfo, None)
             self.coordinator.publish_job(job)
             return job
 
@@ -313,53 +327,17 @@ hq = Headquarters()
 #atexit.register(executor.shutdown)
 atexit.register(hq.shutdown)
 
-def parse_bool(s):
-    s = s.lower()
-    if s == 'true': return True
-    if s == 'false': return False
-    try:
-        i = int(s)
-        return bool(i)
-    except ValueError:
-        pass
-    return bool(s)
+class ClientAPI(QueryApp, DiscoveredHandler):
 
-class ClientAPI:
     def __init__(self):
-        #print >>sys.stderr, "new Headquarters instance created"
-        pass
+        self.hq = hq
+
+    # overriding QueryApp.{GET,POST} because argument order is different
     def GET(self, job, action):
-        h = getattr(self, 'do_' + action, None)
-        if h is None: raise web.notfound(action)
-        response = h(job)
-        if isinstance(response, dict):
-            response = json.dumps(response, check_circular=False,
-                                  separators=',:') + "\n"
-            web.header('content-type', 'text/json')
-        return response
-
+        return self._dispatch('do_', action, job)
     def POST(self, job, action):
-        h = getattr(self, 'post_' + action, None)
-        if h is None: raise web.notfound(action)
-        response = h(job)
-        if isinstance(response, dict):
-            response = json.dumps(response, check_circular=False,
-                                  separators=',:') + "\n"
-            web.header('content-type', 'text/json')
-        return response
+        return self._dispatch('post_', action, job)
 
-    def jsonres(self, r):
-        web.header('content-type', 'text/json')
-        return json.dumps(r, check_circular=False, separators=',:') + "\n"
-    
-    def decode_content(self, data):
-        if web.ctx.env.get('HTTP_CONTENT_ENCODING') == 'gzip':
-            ib = StringIO(data)
-            zf = GzipFile(fileobj=ib)
-            return zf.read()
-        else:
-            return data
-            
     def post_mfinished(self, job):
         '''process finished event in a batch. array of finished crawl URIs
            in the body. each crawl URI is an object with following properties:
@@ -391,86 +369,106 @@ class ClientAPI:
         logging.debug("finished %s", result)
         return result
         
-    def post_discovered(self, job):
-        '''receives URLs found as 'outlinks' in just downloaded page.
-        do_discovered runs already-seen test and then schedule a URL
-        for crawling with last-modified and content-hash obtained
-        from seen database (if previously crawled)'''
+    # def post_discovered(self, job):
+    #     '''receives URLs found as 'outlinks' in just downloaded page.
+    #     do_discovered runs already-seen test and then schedule a URL
+    #     for crawling with last-modified and content-hash obtained
+    #     from seen database (if previously crawled)'''
         
-        p = web.input(force=0)
-        if 'u' not in p:
-            return {error:'u value missing'}
+    #     p = web.input(force=0)
+    #     if 'u' not in p:
+    #         return {error:'u value missing'}
 
-        furi = dict(u=p.u)
-        for k in ('p', 'v', 'x'):
-            if k in p and p[k] is not None: furi[k] = p[k]
+    #     furi = dict(u=p.u)
+    #     for k in ('p', 'v', 'x'):
+    #         if k in p and p[k] is not None: furi[k] = p[k]
 
-        cj = hq.get_job(job)
-        if p.force:
-            return cj.schedule([furi])
-        else:
-            return cj.discovered([furi])
+    #     cj = hq.get_job(job)
+    #     if p.force:
+    #         return cj.schedule([furi])
+    #     else:
+    #         return cj.discovered([furi])
 
-    def post_mdiscovered(self, job):
-        '''receives submission of "discovered" events in batch.
-        this version simply queues data submitted in incoming queue
-        to minimize response time. entries in the incoming queue
-        will be processed by separate processinq call.'''
-        result = dict(processed=0)
-        data = None
-        try:
-            data = web.data()
-            curis = json.loads(self.decode_content(data))
-        except:
-            web.debug("json.loads error:data=%s" % data)
-            result['error'] = 'invalid data - json parse failed'
-            return result
-        if isinstance(curis, dict):
-            force = curis.get('f')
-            curis = curis['u']
-        elif isinstance(curis, list):
-            force = False
-        else:
-            result['error'] = 'invalid data - not an array'
-            return result
-        if len(curis) == 0:
-            return result
+    # def post_mdiscovered(self, job):
+    #     '''receives submission of "discovered" events in batch.
+    #     this version simply queues data submitted in incoming queue
+    #     to minimize response time. entries in the incoming queue
+    #     will be processed by separate processinq call.'''
+    #     result = dict(processed=0)
+    #     data = None
+    #     try:
+    #         data = web.data()
+    #         curis = json.loads(self.decode_content(data))
+    #     except:
+    #         web.debug("json.loads error:data=%s" % data)
+    #         result['error'] = 'invalid data - json parse failed'
+    #         return result
+    #     if isinstance(curis, dict):
+    #         force = curis.get('f')
+    #         curis = curis['u']
+    #     elif isinstance(curis, list):
+    #         force = False
+    #     else:
+    #         result['error'] = 'invalid data - not an array'
+    #         return result
+    #     if len(curis) == 0:
+    #         return result
 
-        cj = hq.get_job(job)
-        start = time.time()
+    #     cj = hq.get_job(job)
+    #     start = time.time()
 
-        if force:
-            result.update(cj.schedule(curis))
-        else:
-            result.update(cj.discovered(curis))
+    #     if force:
+    #         result.update(cj.schedule(curis))
+    #     else:
+    #         result.update(cj.discovered(curis))
 
-        t = time.time() - start
-        result.update(t=t)
-        if t / len(curis) > 1e-3:
-            logging.warn("slow discovered: %.3fs for %d", t, len(curis))
-        else:
-            logging.debug("mdiscovered %s", result)
-        return result
+    #     t = time.time() - start
+    #     result.update(t=t)
+    #     if t / len(curis) > 1e-3:
+    #         logging.warn("slow discovered: %.3fs for %d", t, len(curis))
+    #     else:
+    #         logging.debug("mdiscovered %s", result)
+    #     return result
             
+    def do_processinq(self, job):
+        '''process incoming queue. max parameter advise upper limit on
+        number of URIs processed. actually processed URIs may exceed that
+        number if incoming queue is storing URIs in chunks'''
+        p = web.input(max=5000)
+        maxn = int(p.max)
+        result = dict(job=job, inq=0, processed=0, scheduled=0, excluded=0,
+                      max=maxn, td=0.0, ts=0.0)
+
+        start = time.time()
+        # transient instance for now
+        try:
+            result.update(hq.get_job(job).processinq(maxn))
+        except Exception as ex:
+            logging.exception('processinq failed')
+            result.update(error=str(ex))
+        result.update(job=job, t=(time.time() - start))
+
+        return result
+
     def do_feed(self, job):
-        p = web.input(n=5, name=None, nodes=1)
-        name = int(p.name)
-        nodes = int(p.nodes)
-        count = int(p.n)
-        if count < 1: count = 0
+        p = web.input(n=5, name=None)
+        # TODO: name will be a string
+        name = web.intget(p.name, -1)
+        if name < 0:
+            return []
+        count = max(web.intget(p.n, 0), 0)
 
         start = time.time()
         # return an JSON array of objects with properties:
         # uri, path, via, context and data
-        r = hq.get_job(job).feed((name, nodes), count)
+        r = hq.get_job(job).feed(name, count)
         t = time.time() - start
         if t > 1.0:
             logging.warn("slow feed %s:%s %s, %.4fs", job, name, len(r), t)
         else:
             logging.debug("feed %s %s:%s, %.4fs", job, name, len(r), t)
 
-        web.header('content-type', 'text/json')
-        return self.jsonres(r)
+        return r
 
     def do_reset(self, job):
         '''resets URIs' check-out state, make them schedulable to crawler'''
@@ -487,11 +485,11 @@ class ClientAPI:
         # TODO: return number of URIs reset
         return r
 
-    def do_flush(self, job):
-        '''flushes cached objects into database for safe shutdown'''
-        hq.get_job(job).flush()
-        r = dict(ok=1)
-        return r
+    # def do_flush(self, job):
+    #     '''flushes cached objects into database for safe shutdown'''
+    #     hq.get_job(job).flush()
+    #     r = dict(ok=1)
+    #     return r
 
     def do_seen(self, job):
         p = web.input()
@@ -542,35 +540,22 @@ class ClientAPI:
 
     def do_param(self, job):
         p = web.input(value=None, name='')
-        name = p.name
-        nc = name.split('.')
-        if len(nc) != 2:
-            return dict(success=0, error='bad parameter name', name=name)
-        on, pn = nc
-        j = hq.get_job(job)
-        o = dict(scheduler=j.scheduler, inq=j.inq, hq=hq, job=j).get(on)
-        if o is None:
-            return dict(success=0, error='no such object', name=name)
-        params = o.PARAMS
-        pe = None
-        for d in params:
-            if d[0] == pn:
-                pe = d
-                break
-        if pe is None:
-            return dict(success=0, error='no such parameter', name=name)
-        r = dict(success=1, name=name, v=getattr(o, pe[0], None))
-        if p.value is not None:
-            r['value'] = p.value
-            conv = pe[1]
-            if conv == bool: conv = parse_bool
+        m = rcom.Model(dict(
+                scheduler=j.scheduler, inq=j.inq, hq=hq, job=j))
+        # XXX we cannot set None to an attribute
+        if p.value is None:
             try:
-                r['nv'] = conv(p.value)
-                setattr(o, pe[0], r['nv'])
-            except ValueError:
-                r.update(success=0, error='bad value')
-            except AttributeError as ex:
-                r.update(success=0, error=str(ex), o=str(o), a=pe[0])
+                return dict(success=1, name=name, v=m.get_property(p.name))
+            except Exception, ex:
+                return dict(success=0, name=name, error=str(ex))
+        else:
+            try:
+                nv, ov = m.set_property(p.name, p.value)
+                return dict(success=1, name=name, value=p.value,
+                            v=ov, nv=nv)
+            except Exception, ex:
+                return dict(success=0, name=name, value=p.value,
+                            error=str(ex))
         logging.info("param: %s", r)
         return r
 
@@ -586,22 +571,30 @@ class ClientAPI:
         except Exception as ex:
             return dict(success=0, error=str(ex))
              
+def setuplogging(level=logging.INFO, filename='hq.log'):
+    logsdir = os.path.join(hqconfig.get('datadir'), 'logs')
+    if not os.path.isdir(logsdir): os.makedirs(logsdir)
+    logging.basicConfig(
+        filename=os.path.join(logsdir, filename),
+        level=level,
+        format='%(asctime)s %(levelname)s %(name)s %(message)s',
+        datefmt='%F %T')
+    
+urls = (
+    '/(.*)/(.*)', 'ClientAPI',
+    )
+app = web.application(urls, globals())
+
 if __name__ == "__main__":
     # FastCGI/stand-alone. Under FastCGI exception in app.run() does not
     # appear in server error log.
     try:
-        logsdir = os.path.join(hqconfig.HQ_HOME, 'logs')
-        if not os.path.isdir(logsdir): os.makedirs(logsdir)
-        logging.basicConfig(
-            filename=os.path.join(logsdir, 'hq.log'),
-            level=logging.INFO,
-            format='%(asctime)s %(levelname)s %(name)s %(message)s',
-            datefmt='%F %T')
+        setuplogging()
         logging.info('starting hq')
         app.run()
     except Exception as ex:
         logging.critical('app.run() terminated with error', exc_info=1)
 else:
-    # WSGI
-    logging.basicConfig(level=logging.WARN)
+    # WSGI or testing
+    setuplogging()
     application = app.wsgifunc()

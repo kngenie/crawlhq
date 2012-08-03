@@ -79,9 +79,15 @@ function renderstatus(resp, status, xhr) {
   if (inq) {
     var inqdiv = jQuery('<div>');
     var in_text = 'in=' + with_comma(inq.addedcount);
-    var out_text = 'out=' + with_comma(inq.processedcount);
+    var dequeuecount, qfile_text = '-';
+    if (inq.dequeue) {
+      dequeuecount = inq.dequeue.dequeuecount || 0;
+      qfile_text = 'qfile=' + (inq.dequeue.qfile || '(none)') + ', '
+	+ (inq.dequeue.qfilestep || '-');
+    }
+    var out_text = 'out=' + with_comma(dequeuecount);
     var bf_text = 'buffered=' + with_comma(inq.bufferedcount || 0);
-    var nq_text = 'qfiles=' + with_comma(inq.queuefilecount);
+    var nq_text = 'nqfiles=' + with_comma(inq.queuefilecount);
     var now = (new Date()).getTime();
     var elapsed_ms = now - last_status_update;
     if (elapsed_ms < 3600000) {
@@ -89,19 +95,19 @@ function renderstatus(resp, status, xhr) {
       if (in_speed >= 0 && in_speed < 1000000) {
         in_text += ' (' + (Math.floor(in_speed * 10)/10) + ' URI/s)';
       }
-      var out_speed = (inq.processedcount - last_inq_out) / (elapsed_ms / 1000);
+      var out_speed = (dequeuecount - last_inq_out) / (elapsed_ms / 1000);
       if (out_speed >= 0 && out_speed < 100000) {
         out_text += ' (' + (Math.floor(out_speed * 10)/10) + ' URI/s)';
       }
     }
     inqdiv.append('IncomingQueue: ' + in_text +
 		  ' | ' + bf_text +
-		  ' | ' + nq_text +
-		  ' | ' + out_text
-		  );
+		  ' | ' + nq_text + ', ' + qfile_text
+		  ' | ' + out_text +
+		 );
     last_status_update = now;
     last_inq_in = inq.addedcount;
-    last_inq_out = inq.processedcount;
+    last_inq_out = dequeuecount;
     d.append(inqdiv);
   }
   var sch = data.sch;

@@ -4,27 +4,30 @@ from configobj import ConfigObj
 
 from mongojobconfigs import JobConfigs
 
-HQ_HOME = '/1/crawling/hq'
-
-INQDIR = os.path.join(HQ_HOME, 'inq')
-SEENDIR = os.path.join(HQ_HOME, 'seen')
-WORKSETDIR = os.path.join(HQ_HOME, 'ws')
+# HQ installation directory
+HQHOME = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
 # 255 worksets
 NWORKSETS_BITS = 8
 
 def inqdir(job):
-    return os.path.join(INQDIR, job)
+    return os.path.join(get('datadir'), job, get('inqdir'))
 def seendir(job):
-    return os.path.join(SEENDIR, job)
+    return os.path.join(get('datadir'), job, get('seendir'))
 def worksetdir(job):
-    return os.path.join(WORKSETDIR, job)
+    return os.path.join(get('datadir'), job, get('worksetdir'))
 
 ZKHOSTS = ['crawl433.us.archive.org:2181',
            'crawl434.us.archive.org:2181',
            'crawl402.us.archive.org:2181']
 
 DEFAULT_CONFIG = [
+    # HQ data directory
+    'datadir=/1/crawling/hq',
+    'inqdir=inq',
+    'seendir=seen',
+    'worksetdir=ws',
+    'confdir=conf',
     'zkhosts='+','.join(ZKHOSTS),
     'mongo=localhost',
     '[web]',
@@ -43,9 +46,35 @@ def configobj():
     global _configobj
     if _configobj is None:
         _configobj = ConfigObj(DEFAULT_CONFIG)
-        local_configobj = ConfigObj('/opt/hq/conf/hq.conf')
+        localconfpath = os.path.join(HQHOME, get('confdir'), 'hq.conf')
+        local_configobj = ConfigObj(localconfpath)
         _configobj.merge(local_configobj)
+        # overriding config through env-var (meant for testing)
+        envconf = os.environ.get('HQCONF')
+        if envconf:
+            env_configobj = ConfigObj(envconf.splitlines())
+            _configobj.merge(env_configobj)
     return _configobj
 
+def mergeconfig(config):
+    global _configobj
+    if isinstance(config, list):
+        config = ConfigObj(config)
+    elif not isinstance(config, ConfigObj):
+        raise ValueError, 'config must be a ConfigObj'
+    configobj().merge(config)
+
 def get(p, dv=None):
-    return configobj().get(p, dv)
+    if isinstance(p, basestring):
+        return configobj().get(p, dv)
+    if isinstance(p, (list, tuple)):
+        m = configobj()
+        for e in p:
+            if not hasattr(m, 'get'): return dv
+            m = m.get(e)
+            if m is None: return dv
+        return m
+    raise ValueError, 'bad key: %s' % p
+
+# def __getitem__(p):
+#     return configobj().get(p, None)

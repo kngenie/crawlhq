@@ -50,6 +50,7 @@ class IncomingQueue(object):
     def close(self, blocking=True):
         if self.qfiles:
             for q in self.qfiles:
+                # close should block until all pending writes complete
                 q.close(blocking=blocking)
             
     def flush(self):
@@ -62,7 +63,6 @@ class IncomingQueue(object):
             self.rqfile.close()
         # _flush should be part of close, but not now.
         self.flush()
-        self.write_executor.shutdown()
         self.close()
 
     def get_status(self):
@@ -130,7 +130,6 @@ class SplitIncomingQueue(object):
         self.close()
 
     def close(self):
-        self.write_executor.shutdown()
         for enq in self.enqs:
             enq.close()
 
