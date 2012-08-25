@@ -30,7 +30,10 @@ class WorksetMapper(object):
         self._fp31 = FPGenerator(0xBA75BB4300000000, 31)
 
     def hosthash(self, curi):
-        return int(self._fp31.fp(tasprefix.prefix(curi)))
+        prefix = tasprefix.prefix(curi)
+        if isinstance(prefix, unicode):
+            prefix = prefix.encode('utf-8')
+        return int(self._fp31.fp(prefix))
 
     def workset(self, curi):
         '''reutrns WorkSet id to which curi should be dispatched'''
@@ -287,13 +290,7 @@ class Dispatcher(object):
         # workset, and this HQ server starts forwarding CURIs.
         self.scheduler.flush_workset(wsid)
 
-    def processinq(self, maxn):
-        '''process incoming queue. maxn paramter adivces
-        upper limit on number of URIs processed in this single call.
-        actual number of URIs processed may exceed it if incoming queue
-        stores URIs in chunks.'''
-
-        # lazy initialization of seen db
+    def init_seen(self):
         if not self.seen:
             try:
                 cachesize = hqconfig.get('seencache')
@@ -302,6 +299,15 @@ class Dispatcher(object):
                 cachesize = None
             self.seen = Seen(dbdir=hqconfig.seendir(self.jobname),
                              block_cache_size=cachesize)
+
+    def processinq(self, maxn):
+        '''process incoming queue. maxn paramter adivces
+        upper limit on number of URIs processed in this single call.
+        actual number of URIs processed may exceed it if incoming queue
+        stores URIs in chunks.'''
+
+        # lazy initialization of seen db
+        self.init_seen()
 
         result = dict(processed=0, scheduled=0, excluded=0, saved=0,
                       td=0.0, ts=0.0)

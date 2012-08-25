@@ -1,0 +1,4 @@
+#!/usr/bin/python
+# scheduler that supports distributing URIs to particular HQ server dealing
+# with the domain.
+

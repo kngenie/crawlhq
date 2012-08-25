@@ -17,6 +17,9 @@ os.environ['HQCONF'] = '''datadir=%s
 mongo=crawl403
 ''' % DATADIR
 
+import logging
+logging.basicConfig(level=logging.DEBUG)
+
 sys.path.append(os.path.join(os.path.dirname(__file__), '../ws'))
 import hq
 # we want to see plain stack trace rather than HTML error page.
@@ -46,6 +49,7 @@ class HQTestCase(unittest.TestCase):
         time.sleep(2.0)
         r = hq.app.request('/wide/flush')
         time.sleep(2.0)
+        os.system('/bin/ls -R /tmp/hq/wide/inq')
 
         r = hq.app.request('/wide/processinq?' + urlencode(dict(max=100)))
         assert r.status == '200 OK', r

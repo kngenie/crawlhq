@@ -1,0 +1,48 @@
+$def with(master)
+<html>
+<head>
+<title>Quartermaster</title>
+<link rel="stylesheet" type="text/css" href="../hq.css">
+<script src="http://ajax.googleapis.com/ajax/libs/jquery/1.5.1/jquery.min.js"></script>
+<script src="../master.js"></script>
+<style type="text/css">
+.vital {
+  margin-left: 8px;
+  border: 1px solid gray;
+}
+#view-switches a {
+  margin-right:4px;
+}
+</style>
+</head>
+<body>
+<h1>Headquarter Master Console</h1>
+<h2>Headquarter Servers</h2>
+<div id="view-switches">
+  <a href="#servers">Servers</a>
+  <a href="#jobs">Jobs</a>
+</div>
+<!-- TOO: rename id -->
+<div id="servers">
+</div>
+<h2>Dedup DB</h2>
+<div><span id="urldb-count" class="n">-</span>
+     <button id="count-urldb">Count</button></div>
+<script type="text/javascript">
+jQuery(document).ready(function(){
+  jQuery('#view-switches a').click(function(){
+    setTimeout(update_cluster_view, 500);
+  });
+  jQuery('#count-urldb').click(function(){
+      jQuery.ajax('q/crawlinfocount', {
+          dataType:'json',
+          beforeSend:function(){jQuery('#urldb-count').addClass('wait');},
+          success:update_urldb_count,
+          complete:function(){jQuery('#urldb-count').removeClass('wait');}
+        });
+    });
+  update_servers();
+});
+</script>
+</body>
+</html>

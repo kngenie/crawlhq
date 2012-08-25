@@ -86,6 +86,7 @@ class DispatcherTestCase(unittest.TestCase):
 
     def testSeen(self):
         curi1 = dict(u='http://test.example.com/')
+        self.dispatcher.init_seen()
         self.dispatcher.seen.already_seen(curi1)
 
         self.enq.queue([curi1])

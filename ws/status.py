@@ -15,18 +15,20 @@ from urlparse import urlsplit, urlunsplit
 import atexit
 import logging
 
+import hqconfig
 import urihash
 from weblib import BaseApp
 from mongocrawlinfo import CrawlInfo
 from zkcoord import Coordinator
-import hqconfig
 
 try:
-    mongo = pymongo.Connection(hqconfig.get('mongo'))
+    mongo = pymongo.Connection(host=hqconfig.get('mongo'))
     db = mongo.crawl
 except:
     mongo = None
     db = None
+
+coord = Coordinator(hqconfig.get('zkhosts'))
 
 urls = (
     '/?', 'Status',
@@ -53,7 +55,16 @@ class Status(BaseApp):
             jobs = []
 
         db.connection.end_request()
-        
+
+        status = coord.get_status_of()
+        if status['jobs']:
+            timelimit = time.time() - 24*3600
+            for j in status['jobs']:
+                print >>sys.stderr, "%s" % (j,)
+            activejobs = set((j['name'] for j in status['jobs']
+                              if j['ts'] > timelimit))
+            for j in jobs:
+                j.active = j.name in activejobs
         web.header('content-type', 'text/html')
         return self.render('status', jobs, errors)
 

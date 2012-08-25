@@ -18,7 +18,7 @@ import logging
 
 import hqconfig
 from fileinq import IncomingQueue
-from filequeue import FileEnqueue, FileDequeue
+from filequeue import FileEnqueue, FileDequeue, DummyFileDequeue
 from scheduler import Scheduler
 from executor import *
 from zkcoord import Coordinator
@@ -80,6 +80,7 @@ class PooledIncomingQueue(IncomingQueue):
         maxsize = maxsize / n
         self.write_executor = ThreadPoolExecutor(poolsize=1, queuesize=100)
         self.rqfile = FileDequeue(self.qdir, reader=FPSortingQueueFileReader)
+        #self.rqfile = DummyFileDequeue(self.qdir)
         self.qfiles = [FileEnqueue(self.qdir, suffix=str(i),
                                    maxsize=maxsize,
                                    buffer=buffsize,
@@ -112,14 +113,13 @@ class PooledIncomingQueue(IncomingQueue):
 
 class CrawlJob(object):
 
-    def __init__(self, jobconfigs, jobname, crawlinfo, domaininfo):
-        self.jobconfigs = jobconfigs
+    def __init__(self, hq, jobname):
+        self.hq = hq
+        self.jobconfigs = self.hq.jobconfigs
         self.jobname = jobname
         self.mapper = CrawlMapper(self, hqconfig.NWORKSETS_BITS)
         self.scheduler = Scheduler(hqconfig.worksetdir(self.jobname),
                                    self.mapper)
-
-        self.domaininfo = domaininfo
 
         self.inq = PooledIncomingQueue(
             qdir=hqconfig.inqdir(self.jobname),
@@ -130,8 +130,6 @@ class CrawlJob(object):
                                             
         self.dispatcher = None
         #self.init_dispatcher()
-
-        self.crawlinfodb = crawlinfo
 
         # currently disabled by default - too slow
         self.use_crawlinfo = False
@@ -156,7 +154,7 @@ class CrawlJob(object):
         if self.dispatcher: return
         if self.dispatcher_mode == 'external':
             raise RuntimeError, 'dispatcher mode is %s' % self.dispatcher_mode
-        self.dispatcher = Dispatcher(self.domaininfo,
+        self.dispatcher = Dispatcher(self.hq.get_domaininfo(),
                                      self.jobname,
                                      mapper=self.mapper,
                                      scheduler=self.scheduler,
@@ -211,6 +209,7 @@ class CrawlJob(object):
         return self.dispatcher.processinq(maxn)
 
     def makecuri(self, o):
+        # temporary rescue measure. delete after everything's got fixed.
         if 'a' not in o:
             if 'w' in o:
                 o['a'] = o.pop('w')
@@ -223,15 +222,21 @@ class CrawlJob(object):
         logging.debug('feed "%s" begin', client)
         curis = self.scheduler.feed(client, n)
         # add recrawl info if enabled
-        if self.use_crawlinfo and len(curis) > 0 and self.crawlinfodb:
+        if self.use_crawlinfo and len(curis) > 0 and self.hq.crawlinfo:
             t0 = time.time()
-            self.crawlinfodb.update_crawlinfo(curis)
+            self.hq.crawlinfo.update_crawlinfo(curis)
             t = time.time() - t0
             if t / len(curis) > 0.5:
                 logging.warn("SLOW update_crawlinfo: %s %.3fs/%d",
                              client, t, len(curis))
-            self.crawlinfodb.mongo.end_request()
+            self.hq.crawlinfo.mongo.end_request()
         r = [self.makecuri(u) for u in curis]
+        # if client queue is empty, request incoming queue to flush
+        if not r:
+            # but do not flush too frequently.
+            if self.inq.addedcount > self.last_inq_count + 10000:
+                self.inq.flush
+                self.last_inq_count = self.inq.addedcount
         return r
 
     def finished(self, curis):
@@ -239,11 +244,11 @@ class CrawlJob(object):
         for curi in curis:
             self.scheduler.finished(curi)
             result['processed'] += 1
-        if self.save_crawlinfo and self.crawlinfodb:
+        if self.save_crawlinfo and self.hq.crawlinfo:
             for curi in curis:
-                self.crawlinfodb.save_result(curi)
+                self.hq.crawlinfo.save_result(curi)
             # XXX - until I come up with better design
-            self.crawlinfodb.mongo.end_request()
+            self.hq.crawlinfo.mongo.end_request()
         return result
 
     def reset(self, client):
@@ -267,7 +272,9 @@ class Headquarters(object):
         # named 'wide' for historical reasons.
         #self.crawlinfo = CrawlInfo(self.configdb, 'wide')
         self.crawlinfo = None # disabled for performance reasons
-        self.domaininfo = DomainInfo(self.configdb)
+        # lazy initialization (FIXME: there must be better abstraction)
+        self.domaininfo = None
+        #self.domaininfo = DomainInfo(self.configdb)
         self.jobconfigs = JobConfigs(self.configdb)
         self.coordinator = Coordinator(hqconfig.get('zkhosts'))
 
@@ -275,13 +282,19 @@ class Headquarters(object):
         for job in self.jobs.values():
             logging.info("shutting down job %s", job)
             job.shutdown()
-        logging.info("shutting down domaininfo")
-        self.domaininfo.shutdown()
+        if self.domaininfo:
+            logging.info("shutting down domaininfo")
+            self.domaininfo.shutdown()
         if self.crawlinfo:
             logging.info("shutting down crawlinfo")
             self.crawlinfo.shutdown()
         self.configdb = None
         self.mongo.disconnect()
+
+    def get_domaininfo(self):
+        if self.domaininfo is None:
+            self.domaininfo = DomainInfo(self.configdb)
+        return self.domaininfo
 
     def get_job(self, jobname, nocreate=False):
         with self.jobslock:
@@ -289,9 +302,8 @@ class Headquarters(object):
             if job is None:
                 if nocreate and not self.jobconfigs.job_exists(jobname):
                     raise ValueError('unknown job %s' % jobname)
-                job = self.jobs[jobname] = CrawlJob(
-                    self.jobconfigs, jobname, self.crawlinfo, self.domaininfo)
-                self.coordinator.publish_job(job)
+                job = self.jobs[jobname] = CrawlJob(self, jobname)
+            self.coordinator.publish_job(job)
             return job
 
         self.schedulers = {}
@@ -312,7 +324,8 @@ class Headquarters(object):
         logging.getLogger().setLevel(level)
 
     def reload_domaininfo(self):
-        self.domaininfo.load()
+        if self.domaininfo:
+            self.domaininfo.load()
 
 #executor = ThreadPoolExecutor(poolsize=4)
 hq = Headquarters()
@@ -497,7 +510,8 @@ class ClientAPI(QueryApp, DiscoveredHandler):
             return dict(success=1, r=r)
         except Exception as ex:
             logging.error('get_status failed', exc_info=1)
-            return dict(success=0, err=str(ex))
+            #return dict(success=0, err=str(ex))
+            return dict(success=0, err=traceback.format_exc(limit=2))
 
     def do_worksetstatus(self, job):
         r = hq.get_job(job).get_workset_status()
