@@ -1,0 +1,14 @@
+$def with(errors)
+<html>
+<head>
+<title>Crawl Headquarters</title>
+<link rel="stylesheet" type="text/css" href="hq.css">
+</head>
+<body>
+<div>there are problems with installation/setup</div>
+<ul>
+$for e in errors:
+  <li>${e}</li>
+</ul>
+</body>
+</html>

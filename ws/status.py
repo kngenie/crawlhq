@@ -5,9 +5,6 @@
 # make sure to specify "lib" directory in python-path in WSGI config
 #
 import sys, os
-import web
-from web.utils import Storage, storify
-import pymongo
 import json
 import time
 import re
@@ -15,10 +12,21 @@ from urlparse import urlsplit, urlunsplit
 import atexit
 import logging
 
+setup_problems = []
+try:
+    import web
+    from web.utils import Storage, storify
+    import pymongo
+except ImportError, ex:
+    setup_problems.append(ex)
 import hqconfig
-import urihash
+try:
+    import urihash
+    from mongocrawlinfo import CrawlInfo
+except ImportError, ex:
+    setup_problems.append(ex)
+
 from weblib import BaseApp
-from mongocrawlinfo import CrawlInfo
 from zkcoord import Coordinator
 
 try:
@@ -40,6 +48,9 @@ class Status(BaseApp):
     '''implements control web user interface for crawl headquarters'''
     TMPLDIR = os.path.join(os.path.dirname(__file__), 't')
     def GET(self):
+        if setup_problems:
+            web.header('content-type', 'text/html')
+            return self.render('error_setup', setup_problems)
         if db is None:
             web.header('content-type', 'text/html')
             return ('MongoDB connection is not available.'
