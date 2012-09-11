@@ -74,8 +74,10 @@ class Status(BaseApp):
                 print >>sys.stderr, "%s" % (j,)
             activejobs = set((j['name'] for j in status['jobs']
                               if j['ts'] > timelimit))
-            for j in jobs:
-                j.active = j.name in activejobs
+        else:
+            activejobs = set()
+        for j in jobs:
+            j.active = j.name in activejobs
         web.header('content-type', 'text/html')
         return self.render('status', jobs, errors)
 
