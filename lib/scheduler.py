@@ -52,6 +52,8 @@ class WorkSet(object):
                  checkedout=self.checkedoutcount,
                  finished=self.finishedcount
                  )
+        if self.enq: r['enq'] = self.enq.get_status()
+        if self.deq: r['deq'] = self.deq.get_status()
         return r
 
     def schedule(self, curi):

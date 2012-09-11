@@ -56,9 +56,18 @@ class FileEnqueue(object):
 
     WRITE_BUFSIZE = 50000
 
+    def get_status(self):
+        r = dict(buffered=self.buffered_count,
+                 pending=self.pending_count,
+                 qfile=self.filename)
+        return r
+
     @property
-    def queue_count(self):
+    def pending_count(self):
+        """number of items written to current qfile, but not 'shipped' yet."""
         return self.__queuecount
+    # for backward compatibility
+    queue_count = pending_count
 
     @property
     def buffered_count(self):
