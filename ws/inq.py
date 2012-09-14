@@ -24,11 +24,11 @@ from weblib import QueryApp
 from handlers import DiscoveredHandler
 
 class CrawlJob(object):
-    def __init__(self, jobconfig):
+    def __init__(self, jobconfig, maxqueuesize=4*1000*1000):
         self.jobconfig = jobconfig
         self.enq = FileEnqueue(qdir=hqconfig.inqdir(self.jobconfig.name),
                                suffix=os.getpid(),
-                               maxsize=100*1000*1000,
+                               maxsize=maxqueuesize,
                                buffer=1000,
                                executor=None,
                                gzip=9)
@@ -53,6 +53,7 @@ class Headquarters(object):
         self.configdb = self.mongo.crawl
         self.jobconfigs = JobConfigs(self.configdb)
         #self.coordinator = Coordinator(hqconfig.get('zkhosts'))
+        self.maxinqueuesize = hqconfig.get(('inq', 'maxqueuesize'), 4)
 
     def shutdown(self):
         for job in self.jobs.values():
@@ -64,8 +65,11 @@ class Headquarters(object):
         with self.jobslock:
             job = self.jobs.get(jobname)
             if job is None:
+                # too small maxqueuesize would be a problem, so config
+                # parameter is in MB.
                 job = self.jobs[jobname] = CrawlJob(
-                    self.jobconfigs.get_job(jobname))
+                    self.jobconfigs.get_job(jobname),
+                    maxqueuesize=int(max(1, self.maxinqueuesize)*1000*1000))
                 #self.coordinator.publish_job(job)
             return job
 
