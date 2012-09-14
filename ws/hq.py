@@ -468,7 +468,7 @@ class ClientAPI(QueryApp, DiscoveredHandler):
         # uri, path, via, context and data
         r = hq.get_job(job).feed(name, count)
         t = time.time() - start
-        if t > 1.0:
+        if t > 1.0 and len(r) > 0:
             logging.warn("slow feed %s:%s %s, %.4fs", job, name, len(r), t)
         else:
             logging.debug("feed %s %s:%s, %.4fs", job, name, len(r), t)
