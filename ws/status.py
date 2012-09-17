@@ -54,7 +54,8 @@ class Status(BaseApp):
         if db is None:
             web.header('content-type', 'text/html')
             return ('MongoDB connection is not available.'
-                    ' Make sure mongos is running on this host.')
+                    ' Make sure mongodb is running at %s' %
+                    hqconfig.get('mongo'))
 
         errors = None
         try:
