@@ -120,11 +120,6 @@ class Coordinator(object):
                          flags='e')
             self.jobs[job] = time.time()
 
-        node = self.NODE_GJOBS+'/'+job.jobname
-        self.acreate(node)
-        self.acreate('/'.join((self.NODE_GJOBS, job.jobname, self.nodename)),
-                     flags='e')
-
     def publish_client(self, job, client):
         pass
     
