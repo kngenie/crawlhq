@@ -207,7 +207,7 @@ class FileEnqueue(object):
                 self.file.write(data)
                 self.__size = self.file.tell()
             t = time.time() - t0
-            if t > 0.0 and len(data)/t < 1000000: # 1MB/s
+            if t > 0.0 and max(len(data), 1024)/t < 1000000: # 1MB/s
                 logging.warn('SLOW write: %dB, %.4fs', len(data), t)
             if self.size() > self.maxsize:
                 self.rollover()
@@ -275,15 +275,19 @@ class QueueFileReader(object):
         self.open()
     def open(self):
         fd = os.open(self.fn, os.O_RDWR)
-        self.map = mmap.mmap(fd, 0, access=mmap.ACCESS_WRITE)
-        # mmap dups fd. fd need not be kept open.
-        os.close(fd)
         self.pos = 0
-        if self.map[0:2] == '\x1f\x8b':
-            self.z = GzipFile(fileobj=self.map, mode='rb')
+        sig = os.read(fd, 2)
+        # check for gzip signature
+        if sig == '\x1f\x8b':
+            # there's no added benefit to mmap gzip file, I guess
+            os.lseek(fd, 0, 0)
+            self.z = GzipFile(fileobj=os.fdopen(fd), mode='rb')
             self.__next = self.__next_gzip
         else:
             self.z = None
+            self.map = mmap.mmap(fd, 0, access=mmap.ACCESS_WRITE)
+            # mmap dups fd, fd need not be kept open.
+            os.close(fd)
             self.__next = self.__next_mmap
     def close(self):
         if self.z:
@@ -293,6 +297,10 @@ class QueueFileReader(object):
             self.map.close()
             self.map = None
     def __next_mmap(self):
+        if self.map is None:
+            logging.warn("QueueFileReader:next called on closed file:%s",
+                         self.fn)
+            raise StopIteration
         while self.pos < self.map.size():
             el = self.map.find('\n', self.pos + 1)
             if el < 0: el = self.map.size()
@@ -331,10 +339,6 @@ class QueueFileReader(object):
         raise StopIteration
                              
     def next(self):
-        if self.map is None:
-            logging.warn("QueueFileReader:next called on closed file:%s",
-                         self.fn)
-            raise StopIteration
         return self.__next()
 
 class FileDequeue(object):
@@ -430,12 +434,32 @@ class FileDequeue(object):
                         self.qfilestep = "dispensing"
                     except mmap.error as ex:
                         if ex.errno == 22:
-                            # empty file
+                            # error for empty file on Python -2.6
                             os.remove(self.qfile)
                             self.qfilestep = "error_removed"
                             continue
                         else:
                             raise
+                    except ValueError as ex:
+                        # "mmap offset is greater than file size"
+                        # error for empty file on Python 2.7-
+                        logging.error('failed to open %s: %s',
+                                      self.qfile, str(ex))
+                        setasidefn = os.path.join(
+                            os.path.dirname(self.qfile),
+                            '#'+os.path.basename(self.qfile)
+                            )
+                        try:
+                            os.rename(self.qfile, setasidefn)
+                            logging.info('set aside %s as %s',
+                                         self.qfile, setasidefn)
+                            self.qfilestep = "error set aside"
+                            continue
+                        except OSError, ex:
+                            logging.warn('rename %s #%s failed',
+                                         self.qfile, setasidefn)
+                            continue
+                        
                 self.qfile_read += 1
                 return self.rqfile
             else:
