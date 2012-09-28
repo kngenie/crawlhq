@@ -2,7 +2,7 @@ import sys, os
 import re
 from threading import Thread, RLock, Condition, Event
 import time
-import cjson
+import json
 import mmap
 import logging
 from cStringIO import StringIO
@@ -193,7 +193,7 @@ class FileEnqueue(object):
             b = StringIO()
             for s in data:
                 b.write(' ')
-                b.write(cjson.encode(s))
+                b.write(json.dumps(s, separators=',:'))
                 b.write('\n')
             t0 = time.time(); s0 = self.size()
             data = b.getvalue()
@@ -311,7 +311,7 @@ class QueueFileReader(object):
                 if not self.noupdate:
                     self.map[s] = '#'
                 try:
-                    return cjson.decode(l)
+                    return json.loads(l)
                 except Exception as ex:
                     logging.warn('malformed line in %s at %d: %s', self.fn,
                                  s, l)
@@ -332,7 +332,7 @@ class QueueFileReader(object):
             if l == '': break
             if l[0] != ' ': continue
             try:
-                return cjson.decode(l[1:])
+                return json.loads(l[1:])
             except Exception as ex:
                 logging.warn('malformed line in %s: %s', self.fn, l)
                 continue

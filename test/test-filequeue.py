@@ -4,7 +4,7 @@ import sys
 import os
 import testhelper
 import unittest
-import cjson
+import json
 import time
 
 from filequeue import *
@@ -34,7 +34,7 @@ class FileQueueTestCase(unittest.TestCase):
         fn = os.listdir(DATADIR)[0]
         assert not fn.endswith('.open'), '%s has .open suffix' % fn
         with open(os.path.join(DATADIR, fn)) as f:
-            j = cjson.decode(f.readline().rstrip()[1:])
+            j = json.loads(f.readline().rstrip()[1:])
             assert j == data, 'expected %s, got %s' % (data, j)
 
             assert f.readline() == '', 'expected EOF'
@@ -78,7 +78,7 @@ class FileQueueTestCase(unittest.TestCase):
 
     def testRollover(self):
         data = [ dict(id=i, v='x'*256) for i in xrange(1024/16) ]
-        datasize = sum(len(cjson.encode(d))+2 for d in data)
+        datasize = sum(len(json.dumps(d, separators=',:'))+2 for d in data)
         #print "datasize=%d" % datasize
         MAXSIZE = 8*1024
         q = FileEnqueue(DATADIR, maxsize=MAXSIZE, gzip=0)
@@ -97,7 +97,8 @@ class FileQueueTestCase(unittest.TestCase):
             print "%s: size=%s" % (fn, size)
             assert size > MAXSIZE, '%s: expected size>%d, got %d' % (
                 fn, MAXSIZE, size)
-            ubound = MAXSIZE + max(len(cjson.encode(d))+2 for d in data)
+            ubound = MAXSIZE + max(len(json.dumps(d, separators=',:'))+2
+                                   for d in data)
             assert size < ubound, '%s: expected size<%d, but got %d' % (
                 fn, ubound, size)
 

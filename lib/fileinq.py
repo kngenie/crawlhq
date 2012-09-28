@@ -4,7 +4,6 @@ import sys, os
 import re
 from threading import Thread, RLock, Condition, Event
 import time
-import cjson
 import mmap
 from filequeue import FileEnqueue, FileDequeue
 import logging

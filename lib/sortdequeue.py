@@ -1,6 +1,6 @@
 import sys, os
 import mmap
-import cjson
+import json
 import logging
 import time
 from gzip import GzipFile
@@ -31,8 +31,8 @@ class SortedQueue(object):
             if el < 0: el = self.map.size()
             if self.map[p] == ' ':
                 try:
-                    o = cjson.decode(self.map[p + 1:el])
-                except cjson.DecodeError:
+                    o = json.loads(self.map[p + 1:el])
+                except ValueError, ex:
                     logging.warn("skipping malformed JSON at %s:%d: %s",
                                  self.fn, p, self.map[p + 1:el])
                     p = el + 1
@@ -73,8 +73,8 @@ class SortedQueue(object):
             if not l: break
             if l[0] != ' ': continue
             try:
-                o = cjson.decode(l[1:])
-            except Exception as ex:
+                o = json.loads(l[1:])
+            except ValueError as ex:
                 logging.warn("skipping malformed JSON at %s:%d: %s",
                              self.fn, p, l[1:])
                 continue
@@ -129,7 +129,7 @@ class SortedQueue(object):
                 el = self.map.find('\n', a[1] + 1)
                 if el < 0: el = self.map.size()
                 l = self.map[a[1] + 1:el]
-                o = cjson.decode(l)
+                o = json.loads(l)
             if 'id' not in o:
                 o['id'] = a[0]
             break
@@ -176,7 +176,7 @@ class SortingQueueFileReader(object):
                 raise StopIteration
             try:
                 o = self.qfile.getnext()
-            except cjson.DecodeError as ex:
+            except ValueError as ex:
                 # this should not happen unless qfile is modified
                 logging.warn('malformed line in %s', self.qfile.fn)
                 continue

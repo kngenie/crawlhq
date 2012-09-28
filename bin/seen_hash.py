@@ -3,7 +3,7 @@
 import os, sys
 sys.path[0:0] = ('/opt/hq/lib',)
 import re
-import cjson
+import json
 import time
 from cfpgenerator import FPGenerator
 import traceback
@@ -35,7 +35,7 @@ class Worker(object):
                     if len(l) < 2 or l[1] != '{': continue
                     self.st['all'] += 1
                     try:
-                        curi = cjson.decode(l[1:].rstrip())
+                        curi = json.loads(l[1:].rstrip())
                         hash = urifp(curi['u'])
                     except:
                         print >>sys.stderr, "%s(%d):%s" % (qfile, ln, l)
