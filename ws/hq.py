@@ -210,12 +210,13 @@ class CrawlJob(object):
 
     def makecuri(self, o):
         # temporary rescue measure. delete after everything's got fixed.
-        if 'a' not in o:
-            if 'w' in o:
-                o['a'] = o.pop('w')
-            else:
-                a = dict(((k, o.pop(k)) for k in 'pxv' if k in o))
-                if a: o['a'] = a
+        a = o.get('a')
+        if isinstance(a, dict):
+            for k in 'pvx':
+                m = a.pop(k, None)
+                if m is not None: o[k] = m
+            if not o['a']:
+                del o['a']
         return o
 
     def feed(self, client, n):

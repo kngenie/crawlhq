@@ -330,15 +330,12 @@ class Dispatcher(object):
                 t0 = time.time()
                 suri = self.seen.already_seen(furi)
                 if suri['e'] < int(time.time()):
-                    if 'w' in furi:
-                        a = furi['w']
-                    else:
-                        a = dict()
-                        for k in ('p','v','x'):
-                            m = furi.get(k)
-                            if m is not None:
-                                a[k] = m
-                    curi = dict(u=furi['u'], id=suri['_id'], a=a)
+                    curi = dict(u=furi['u'], id=suri['_id'])
+                    a = furi.get('w')
+                    if not isinstance(a, dict): a = furi
+                    for k in 'pvx':
+                        m = a.get(k)
+                        if m is not None: curi[k] = m
                     self.scheduler.schedule(curi)
                     result['scheduled'] += 1
                 result['ts'] += (time.time() - t0)
