@@ -2,8 +2,6 @@
 import os
 from configobj import ConfigObj
 
-from mongojobconfigs import JobConfigs
-
 # HQ installation directory
 HQHOME = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
@@ -17,6 +15,9 @@ def seendir(job):
 def worksetdir(job):
     return os.path.join(get('datadir'), job, get('worksetdir'))
 
+def cachedir():
+    return os.path.join(get('datadir'), get('cachedir'))
+
 ZKHOSTS = ['crawl433.us.archive.org:2181',
            'crawl434.us.archive.org:2181',
            'crawl402.us.archive.org:2181']
@@ -27,19 +28,13 @@ DEFAULT_CONFIG = [
     'inqdir=inq',
     'seendir=seen',
     'worksetdir=ws',
+    'cachedir=cache',
     'confdir=conf',
     'zkhosts='+','.join(ZKHOSTS),
     'mongo=localhost',
     '[web]',
     'debug=0'
     ]
-
-__jobconfig = None
-def jobconfig():
-    global __jobconfig
-    if __jobconfig is None:
-        __jobconfig = JobConfigs()
-    return __jobconfig
 
 _configobj = None
 def configobj():

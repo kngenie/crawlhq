@@ -32,6 +32,9 @@ from weblib import QueryApp
 import rcom
 from handlers import *
 
+class UnknownJobError(Exception):
+    pass
+
 class CrawlMapper(WorksetMapper):
     """maps client queue id to set of WorkSets
     """
@@ -235,7 +238,7 @@ class CrawlJob(object):
         # if client queue is empty, request incoming queue to flush
         if not r:
             # but do not flush too frequently.
-            if self.inq.addedcount > self.last_inq_count + 10000:
+            if self.inq.addedcount > self.last_inq_count + 1000:
                 self.inq.flush
                 self.last_inq_count = self.inq.addedcount
         return r
@@ -302,7 +305,7 @@ class Headquarters(object):
             job = self.jobs.get(jobname)
             if job is None:
                 if nocreate and not self.jobconfigs.job_exists(jobname):
-                    raise ValueError('unknown job %s' % jobname)
+                    raise UnknownJobError('unknown job %s' % jobname)
                 job = self.jobs[jobname] = CrawlJob(self, jobname)
             self.coordinator.publish_job(job)
             return job
@@ -449,6 +452,8 @@ class ClientAPI(QueryApp, DiscoveredHandler):
         # transient instance for now
         try:
             result.update(hq.get_job(job).processinq(maxn))
+        except UnknownJobError as ex:
+            result.update(error=str(ex))
         except Exception as ex:
             logging.exception('processinq failed')
             result.update(error=str(ex))
@@ -509,6 +514,8 @@ class ClientAPI(QueryApp, DiscoveredHandler):
         try:
             r = hq.get_job(job, nocreate=1).get_status()
             return dict(success=1, r=r)
+        except UnknownJobError as ex:
+            return dict(success=0, err=str(ex))
         except Exception as ex:
             logging.error('get_status failed', exc_info=1)
             #return dict(success=0, err=str(ex))

@@ -82,6 +82,9 @@ class DiscoveredHandler(object):
 
     def do_flush(self, job):
         '''flushes cached objects into database for safe shutdown'''
-        self.hq.get_job(job).flush()
-        r = dict(ok=1, worker=os.getpid())
+        try:
+            self.hq.get_job(job).flush()
+        except Exception, ex:
+            return dict(success=0, worker=os.getpid(), err=str(ex))
+        r = dict(success=1, worker=os.getpid())
         return r

@@ -200,7 +200,7 @@ function flush_job() {
     dataType:'json',
     beforeSend:function(){jQuery(btn).addClass('wait');},
     success:function(data){
-      if (!data.ok) {
+      if (!data.success) {
         alert('job ' + job + ' flush failed');
       }
     },

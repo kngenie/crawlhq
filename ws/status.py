@@ -26,6 +26,7 @@ try:
 except ImportError, ex:
     setup_problems.append(ex)
 
+from mongojobconfigs import JobConfigs
 from weblib import BaseApp
 from zkcoord import Coordinator
 
@@ -37,6 +38,7 @@ except:
     db = None
 
 coord = Coordinator(hqconfig.get('zkhosts'))
+jobconfigs = JobConfigs(db)
 
 urls = (
     '/?', 'Status',
@@ -59,11 +61,9 @@ class Status(BaseApp):
 
         errors = None
         try:
-            jobs = [storify(j) for j in db.jobconfs.find()]
-        except pymongo.errors.PyMongoError, ex:
-            errors = [
-                "%s (mongo=%s)" % (ex, hqconfig.get('mongo'))
-                ]
+            jobs = jobconfigs.get_alljobs()
+        except Exception, ex:
+            errors = [str(ex)]
             jobs = []
 
         db.connection.end_request()

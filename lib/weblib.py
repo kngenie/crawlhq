@@ -44,7 +44,12 @@ class QueryApp(object):
                 c, p + c, self))
         r = f(*args)
         if isinstance(r, (dict, list)):
-            r = json.dumps(r, check_circular=False, separators=',:') + '\n'
+            try:
+                r = json.dumps(r, check_circular=False, separators=',:') + '\n'
+            except Exception, ex:
+                logging.error('json.dumps failed on "%r"', r)
+                r = json.dumps(dict(success=0, err=str(ex),
+                                    value=str(r)))
             web.header('content-type', 'text/json')
         return r
 
