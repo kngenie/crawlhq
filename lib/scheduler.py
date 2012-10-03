@@ -260,6 +260,8 @@ class Scheduler(object):
         return r
 
     def get_clientqueue(self, clid):
+        if not isinstance(clid, (int, long, basestring)):
+            raise ValueError, 'clid must be an integral number or a string'
         q = self.clients.get(clid)
         if q is None:
             worksets = [self.worksets[i]

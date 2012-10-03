@@ -483,15 +483,14 @@ class ClientAPI(QueryApp, DiscoveredHandler):
 
     def do_reset(self, job):
         '''resets URIs' check-out state, make them schedulable to crawler'''
-        p = web.input(name=None, nodes=1)
+        p = web.input(name=None)
         name = int(p.name)
-        nodes = int(p.nodes)
-        r = dict(name=name, nodes=nodes)
+        r = dict(name=name)
         logging.info("received reset request: %s", str(r))
-        if name is None or nodes is None:
-            r.update(msg='name and nodes are required')
+        if name is None:
+            r.update(msg='name is required')
             return r
-        r.update(hq.get_job(job).reset((name, nodes)))
+        r.update(hq.get_job(job).reset(name))
         logging.info("reset %s", str(r))
         # TODO: return number of URIs reset
         return r
