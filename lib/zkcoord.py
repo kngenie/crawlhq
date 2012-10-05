@@ -29,6 +29,7 @@ class Coordinator(object):
         
         if not isinstance(zkhosts, basestring):
             zkhosts = ','.join(zkhosts)
+        self.zkhosts = zkhosts
         self.ROOT = root
         self.alivenode = alivenode
         self.nodename = os.uname()[1]
@@ -36,7 +37,7 @@ class Coordinator(object):
         self.NODE_SERVERS = self.ROOT + '/servers'
         self.NODE_ME = self.NODE_SERVERS+'/'+self.nodename
 
-        self.zh = zk.init(zkhosts, self.__watcher)
+        self.zh = zk.init(self.zkhosts, self.__watcher)
 
         self.jobs = {}
 
@@ -84,7 +85,7 @@ class Coordinator(object):
             elif state == zk.EXPIRED_SESSION_STATE:
                 # unrecoverable state - close and reconnect
                 zk.close(self.zh)
-                self.zh = zk.init(zkhosts, self.__watcher)
+                self.zh = zk.init(self.zkhosts, self.__watcher)
 
     def __servers_watcher(self, zh, evtype, state, path):
         try:
