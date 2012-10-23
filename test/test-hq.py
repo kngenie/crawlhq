@@ -8,22 +8,35 @@ import json
 import subprocess
 from urllib import urlencode
 import time
+import logging
 
 DATADIR = '/tmp/hq'
 if not os.path.isdir(DATADIR):
     os.makedirs(DATADIR)
-# TODO: too bad to use production mongodb for testing - use mock.
 os.environ['HQCONF'] = '''datadir=%s
-mongo=crawl403
 ''' % DATADIR
 
-import logging
+import hqconfig
+import testjobconfigs
+import testseen
+import localcoord
+class TestDomainInfo(object):
+    def __init__(self):
+        pass
+    def load(self):
+        pass
+    def shutdown(self):
+        pass
+hqconfig.factory.coordinator = localcoord.Coordinator
+hqconfig.factory.domaininfo = TestDomainInfo
+
 logging.basicConfig(level=logging.DEBUG)
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '../ws'))
 import hq
 # we want to see plain stack trace rather than HTML error page.
 hq.web.config.debug = False
+
 
 class HQTestCase(unittest.TestCase):
     def setUp(self):

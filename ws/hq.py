@@ -6,7 +6,6 @@
 #
 import sys, os
 import web
-import pymongo
 import json
 import time
 import re
@@ -21,13 +20,8 @@ from fileinq import IncomingQueue
 from filequeue import FileEnqueue, FileDequeue, DummyFileDequeue
 from scheduler import Scheduler
 from executor import *
-from zkcoord import Coordinator
-from mongodomaininfo import DomainInfo
-from mongocrawlinfo import CrawlInfo
-from mongojobconfigs import JobConfigs
 import urihash
 from dispatcher import WorksetMapper, Dispatcher, FPSortingQueueFileReader
-from seen import Seen
 from weblib import QueryApp
 import rcom
 from handlers import *
@@ -268,19 +262,12 @@ class Headquarters(object):
     def __init__(self):
         self.jobs = {}
         self.jobslock = threading.RLock()
-        mongoserver = hqconfig.get('mongo')
-        logging.warn('using MongoDB: %s', mongoserver)
-        self.mongo = pymongo.Connection(mongoserver)
-        self.configdb = self.mongo.crawl
         # single shared CrawlInfo database
-        # named 'wide' for historical reasons.
-        #self.crawlinfo = CrawlInfo(self.configdb, 'wide')
         self.crawlinfo = None # disabled for performance reasons
         # lazy initialization (FIXME: there must be better abstraction)
         self.domaininfo = None
-        #self.domaininfo = DomainInfo(self.configdb)
-        self.jobconfigs = JobConfigs(self.configdb)
-        self.coordinator = Coordinator(hqconfig.get('zkhosts'))
+        self.jobconfigs = hqconfig.factory.jobconfigs()
+        self.coordinator = hqconfig.factory.coordinator()
 
     def shutdown(self):
         for job in self.jobs.values():
@@ -292,12 +279,10 @@ class Headquarters(object):
         if self.crawlinfo:
             logging.info("shutting down crawlinfo")
             self.crawlinfo.shutdown()
-        self.configdb = None
-        self.mongo.disconnect()
 
     def get_domaininfo(self):
         if self.domaininfo is None:
-            self.domaininfo = DomainInfo(self.configdb)
+            self.domaininfo = hqconfig.factory.domaininfo()
         return self.domaininfo
 
     def get_job(self, jobname, nocreate=False):
@@ -377,67 +362,6 @@ class ClientAPI(QueryApp, DiscoveredHandler):
         result['t'] = time.time() - start
         logging.debug("finished %s", result)
         return result
-        
-    # def post_discovered(self, job):
-    #     '''receives URLs found as 'outlinks' in just downloaded page.
-    #     do_discovered runs already-seen test and then schedule a URL
-    #     for crawling with last-modified and content-hash obtained
-    #     from seen database (if previously crawled)'''
-        
-    #     p = web.input(force=0)
-    #     if 'u' not in p:
-    #         return {error:'u value missing'}
-
-    #     furi = dict(u=p.u)
-    #     for k in ('p', 'v', 'x'):
-    #         if k in p and p[k] is not None: furi[k] = p[k]
-
-    #     cj = hq.get_job(job)
-    #     if p.force:
-    #         return cj.schedule([furi])
-    #     else:
-    #         return cj.discovered([furi])
-
-    # def post_mdiscovered(self, job):
-    #     '''receives submission of "discovered" events in batch.
-    #     this version simply queues data submitted in incoming queue
-    #     to minimize response time. entries in the incoming queue
-    #     will be processed by separate processinq call.'''
-    #     result = dict(processed=0)
-    #     data = None
-    #     try:
-    #         data = web.data()
-    #         curis = json.loads(self.decode_content(data))
-    #     except:
-    #         web.debug("json.loads error:data=%s" % data)
-    #         result['error'] = 'invalid data - json parse failed'
-    #         return result
-    #     if isinstance(curis, dict):
-    #         force = curis.get('f')
-    #         curis = curis['u']
-    #     elif isinstance(curis, list):
-    #         force = False
-    #     else:
-    #         result['error'] = 'invalid data - not an array'
-    #         return result
-    #     if len(curis) == 0:
-    #         return result
-
-    #     cj = hq.get_job(job)
-    #     start = time.time()
-
-    #     if force:
-    #         result.update(cj.schedule(curis))
-    #     else:
-    #         result.update(cj.discovered(curis))
-
-    #     t = time.time() - start
-    #     result.update(t=t)
-    #     if t / len(curis) > 1e-3:
-    #         logging.warn("slow discovered: %.3fs for %d", t, len(curis))
-    #     else:
-    #         logging.debug("mdiscovered %s", result)
-    #     return result
             
     def do_processinq(self, job):
         '''process incoming queue. max parameter advise upper limit on

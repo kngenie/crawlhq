@@ -63,6 +63,13 @@ class FPGenerator:
         '''long fp(CharSequence s) in Java'''
         return self.extend(self.empty, s)
 
+    def sfp(self, s):
+        """returns fingerprint as signed int64."""
+        fp = self.fp(s)
+        if fp & (1<<63):
+            fp = -((~fp & ((1<<64)-1)) + 1)
+        return int(fp)
+
     def extend(self, f, s):
         '''long extend(long f, CharSequence s) in Java'''
         for c in s:

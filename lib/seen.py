@@ -6,6 +6,25 @@ import logging
 
 import urihash
 import leveldb
+import hqconfig
+
+"""
+Seen database implementation on top of LevelDB.
+"""
+
+class SeenFactory(object):
+    def __init__(self):
+        self.job_seen = dict()
+
+    def __call__(self, job):
+        # seen cache parameter is in MB
+        seen = self.job_seen.get(job)
+        if not seen:
+            cachesize = hqconfig.get('seencache')
+            if cachesize: cachesize = int(cachesize)*(1024**2)
+            seen = Seen(dbdir=hqconfig.seendir(self.jobname))
+            self.job_seen[job] = seen
+        return seen
 
 class Seen(object):
     #_fp64 = FPGenerator(0xD74307D3FD3382DB, 64)

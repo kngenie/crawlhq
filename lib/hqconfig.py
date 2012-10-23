@@ -36,12 +36,15 @@ DEFAULT_CONFIG = [
     'debug=0'
     ]
 
+def confdir():
+    return os.path.join(HQHOME, get('confdir'))
+
 _configobj = None
 def configobj():
     global _configobj
     if _configobj is None:
         _configobj = ConfigObj(DEFAULT_CONFIG)
-        localconfpath = os.path.join(HQHOME, get('confdir'), 'hq.conf')
+        localconfpath = os.path.join(confdir(), 'hq.conf')
         local_configobj = ConfigObj(localconfpath)
         _configobj.merge(local_configobj)
         # overriding config through env-var (meant for testing)
@@ -71,5 +74,10 @@ def get(p, dv=None):
         return m
     raise ValueError, 'bad key: %s' % p
 
+import factory
+factory_script = os.path.join(confdir(), 'factory.py')
+if os.path.isfile(factory_script):
+    execfile(factory_script, globals(), factory)
+        
 # def __getitem__(p):
 #     return configobj().get(p, None)

@@ -6,28 +6,11 @@ import json
 import logging
 import itertools
 
+from jobconfigs import JobConfig
+
 __all__ = ['JobConfigs']
 
 # TODO: move this to engine-independent module
-class JobConfig(object):
-    """collection of property for the given job"""
-    def __init__(self, jobconfigs, jobdic):
-        self.db = jobconfigs
-        self.job = jobdic
-    @property
-    def name(self):
-        return self.job['name']
-    def __getitem__(self, k):
-        return self.job[k]
-    def __setitem__(self, k, v):
-        self.job[k] = v
-    def get(self, k, v):
-        return self.job.get(k, v)
-    def _updates(self):
-        """return dic for updating backend. will return
-        those fields modified since last save. for use by JobConfigs."""
-        return dict(self.job)
-
 class JobConfigJSONEncoder(json.JSONEncoder):
     def default(self, o):
         if isinstance(o, JobConfig):

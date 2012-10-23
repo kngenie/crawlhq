@@ -13,11 +13,11 @@ import web
 import logging
 import atexit
 
-import pymongo
+#import pymongo
 
 from executor import *
 import hqconfig
-from mongojobconfigs import JobConfigs
+#from mongojobconfigs import JobConfigs
 from fileinq import IncomingQueue
 from filequeue import FileEnqueue
 from weblib import QueryApp
@@ -49,17 +49,18 @@ class Headquarters(object):
     def __init__(self):
         self.jobs = {}
         self.jobslock = threading.RLock()
-        self.mongo = pymongo.Connection(hqconfig.get('mongo'))
-        self.configdb = self.mongo.crawl
-        self.jobconfigs = JobConfigs(self.configdb)
+        #self.mongo = pymongo.Connection(hqconfig.get('mongo'))
+        #self.configdb = self.mongo.crawl
+        self.jobconfigs = hqconfig.factory.jobconfigs() #JobConfigs(self.configdb)
         #self.coordinator = Coordinator(hqconfig.get('zkhosts'))
         self.maxinqueuesize = hqconfig.get(('inq', 'maxqueuesize'), 4)
 
     def shutdown(self):
         for job in self.jobs.values():
             job.shutdown()
-        self.configdb = None
-        self.mongo.disconnect()
+        self.jobconfigs = None
+        #self.configdb = None
+        #self.mongo.disconnect()
 
     def get_job(self, jobname):
         with self.jobslock:

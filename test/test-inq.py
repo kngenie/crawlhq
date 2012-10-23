@@ -8,6 +8,8 @@ import json
 import subprocess
 from urllib import urlencode
 
+from jobconfigs import JobConfig
+
 DATADIR = '/tmp/hq'
 if not os.path.isdir(DATADIR):
     os.makedirs(DATADIR)
@@ -15,6 +17,8 @@ if not os.path.isdir(DATADIR):
 os.environ['HQCONF'] = '''datadir=%s
 mongo=crawl403
 ''' % DATADIR
+
+import testjobconfigs
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '../ws'))
 import inq
