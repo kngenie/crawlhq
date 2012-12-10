@@ -313,8 +313,8 @@ class QueueFileReader(object):
                 try:
                     return json.loads(l)
                 except Exception as ex:
-                    logging.warn('malformed line in %s at %d: %s', self.fn,
-                                 s, l)
+                    logging.warn('malformed line in %s at %d: %s (%s)',
+                                 self.fn, s, l, ex)
                     continue
         raise StopIteration
 
