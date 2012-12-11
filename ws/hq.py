@@ -79,10 +79,15 @@ class CrawlMapper(WorksetMapper):
             self.crawljob.workset_activating(wsid)
 
 class PooledIncomingQueue(IncomingQueue):
-    def init_queues(self, n=5, buffsize=0, maxsize=1000*1000*1000):
+    def init_queues(self, n=5, buffsize=0, maxsize=1000*1000*1000,
+                    readsorted=1):
         maxsize = maxsize / n
         self.write_executor = ThreadPoolExecutor(poolsize=1, queuesize=100)
-        self.rqfile = FileDequeue(self.qdir, reader=FPSortingQueueFileReader)
+        print >>sys.stderr, "PooledIncomingQueue.readsorted=%r" % readsorted
+        if readsorted:
+            self.rqfile = FileDequeue(self.qdir, reader=FPSortingQueueFileReader)
+        else:
+            self.rqfile = FileDequeue(self.qdir)
         #self.rqfile = DummyFileDequeue(self.qdir)
         self.qfiles = [FileEnqueue(self.qdir, suffix=str(i),
                                    maxsize=maxsize,
@@ -124,9 +129,14 @@ class CrawlJob(object):
         self.scheduler = Scheduler(hqconfig.worksetdir(self.jobname),
                                    self.mapper)
 
+        try:
+            readsorted = int(hqconfig.get(('inq', 'sort'), 1))
+        except:
+            readsorted = 1
         self.inq = PooledIncomingQueue(
             qdir=hqconfig.inqdir(self.jobname),
-            buffsize=1000)
+            buffsize=1000,
+            readsorted=readsorted)
 
         self._dispatcher_mode = hqconfig.get(
             ('jobs', self.jobname, 'dispatcher'), 'internal')

@@ -69,7 +69,9 @@ class DiscoveredHandler(object):
 
         start = time.time()
         if force:
-            result.update(cj.schedule(curis))
+            for curi in curis:
+                curi['f'] = 1
+            result.update(cj.discovered(curis))
         else:
             result.update(cj.discovered(curis))
         t = time.time() - start

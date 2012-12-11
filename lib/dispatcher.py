@@ -328,9 +328,8 @@ class Dispatcher(object):
                     result['excluded'] += 1
                     continue
                 t0 = time.time()
-                suri = self.seen.already_seen(furi)
-                if suri['e'] < int(time.time()):
-                    curi = dict(u=furi['u'], id=suri['_id'])
+                if furi.get('f', 0):
+                    curi = dict(u=furi['u'])
                     a = furi.get('w')
                     if not isinstance(a, dict): a = furi
                     for k in 'pvx':
@@ -338,6 +337,17 @@ class Dispatcher(object):
                         if m is not None: curi[k] = m
                     self.scheduler.schedule(curi)
                     result['scheduled'] += 1
+                else:
+                    suri = self.seen.already_seen(furi)
+                    if suri['e'] < int(time.time()):
+                        curi = dict(u=furi['u'], id=suri['_id'])
+                        a = furi.get('w')
+                        if not isinstance(a, dict): a = furi
+                        for k in 'pvx':
+                            m = a.get(k)
+                            if m is not None: curi[k] = m
+                        self.scheduler.schedule(curi)
+                        result['scheduled'] += 1
                 result['ts'] += (time.time() - t0)
             else:
                 if self.workset_state[ws]:

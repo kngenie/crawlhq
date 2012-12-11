@@ -100,9 +100,27 @@ class Seen(object):
                 while 1:
                     key = self.putqueue.get_nowait()
                     self.seendb.put(key, '1')
-                    del self.memhash[key]
+                    if key in self.memhash:
+                        del self.memhash[key]
             except Empty:
                 pass
+
+    def _mark_seen(self, key):
+        while 1:
+            try:
+                self.putqueue.put_nowait(key)
+                self.memhash[key] = self.EXPIRE_NEVER
+                self.addedcount += 1
+                return
+            except Full:
+                self.drain_putqueue()
+
+    def mark_seen(self, furi):
+        self.ready.wait()
+        key = furi.get('id')
+        if key is None:
+            key = furi['id'] = urihash.urikey(furi['u'])
+        self._mark_seen(key)
 
     def already_seen(self, furi):
         self.ready.wait()
@@ -111,15 +129,7 @@ class Seen(object):
             return {'_id': key, 'e': self.memhash[key]}
         v = self.seendb.get(key)
         if not v:
-            #self.seendb.put(key, '1')
-            while 1:
-                try:
-                    self.memhash[key] = self.EXPIRE_NEVER
-                    self.putqueue.put_nowait(key)
-                    self.addedcount += 1
-                    break
-                except Full:
-                    self.drain_putqueue()
+            self._mark_seen(key)
             return {'_id': key, 'e': 0}
         else:
             return {'_id': key, 'e': self.EXPIRE_NEVER}

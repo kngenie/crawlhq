@@ -5,6 +5,9 @@ import threading
 import json
 import logging
 import itertools
+import time
+
+import pymongo
 
 __all__ = ['JobConfigs']
 
@@ -44,26 +47,39 @@ class JobConfigs(object):
         self.jobslock = threading.RLock()
         self.cachefn = os.path.join(self.cachedir, 'jobconfigs.json')
 
+        self.lasterror = None
+        self.lastload = None
+        self.currentversion = None
+
     def shutdown(self):
         self.db = None
 
     def get_status(self):
-        s = dict()
+        s = dict(
+            lastload=self.lastload,
+            lasterror=self.lasterror,
+            currentversion=self.currentversion
+            )
         return s
 
     def _load(self):
         logging.debug('_load');
         if self.db is None:
             raise IOError, 'MongoDB is offline'
-        jobs = dict()
-        # TODO implement retry on AutoReconnect
-        for jobdic in self.coll.find():
-            logging.debug('loading job: %s', jobdic)
-            if '_id' in jobdic: del jobdic['_id']
-            name = jobdic.get('name')
-            # discard entry with no name, empty name (and bad name?)...
-            if name:
-                jobs[name] = JobConfig(self, dict(jobdic))
+        while 1:
+            try:
+                jobs = dict()
+                # TODO implement retry on AutoReconnect
+                for jobdic in self.coll.find():
+                    logging.debug('loading job: %s', jobdic)
+                    if '_id' in jobdic: del jobdic['_id']
+                    name = jobdic.get('name')
+                    # discard entry with no name, empty name (and bad name?)...
+                    if name:
+                        jobs[name] = JobConfig(self, dict(jobdic))
+                break
+            except pymongo.errors.AutoReconnect, ex:
+                logging.debug('_load:got AutoReconnect, retrying')
         self.jobs = jobs
 
     def _savejob(self, jobname):
@@ -86,6 +102,7 @@ class JobConfigs(object):
         try:
             with open(self.cachefn) as r:
                 jobs = json.loads(r.read())
+                self.currentversion = os.fstat(r.fileno()).st_mtime
             # TODO check validity
             self.jobs = jobs
         except IOError, ex:
@@ -98,6 +115,8 @@ class JobConfigs(object):
             logging.warn('%s: JSON decode  failed: %s', self.cachefn, str(ex))
 
     def _write_cache(self):
+        # TODO: this may be run by multiple processes. need to place a
+        # lock on file to avoid corruption.
         while 1:
             try:
                 with open(self.cachefn, 'w') as w:
@@ -124,8 +143,11 @@ class JobConfigs(object):
             if self.jobs is None:
                 try:
                     self._load()
+                    self.lastload = time.time()
+                    self.currentversion = self.lastload
                     self._write_cache()
                 except:
+                    self.lasterror = time.time()
                     logging.warn('failed to load JobConfigs from MongoDB.'
                                  ' reading cached data', exc_info=1)
                     self._read_cache()
