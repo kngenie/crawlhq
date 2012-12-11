@@ -24,7 +24,7 @@ def mongo():
 
 @singleton
 def configdb():
-    return mongo().crawl()
+    return mongo().crawl
 
 @singleton
 def coordinator():

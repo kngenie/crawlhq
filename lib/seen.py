@@ -22,7 +22,7 @@ class SeenFactory(object):
         if not seen:
             cachesize = hqconfig.get('seencache')
             if cachesize: cachesize = int(cachesize)*(1024**2)
-            seen = Seen(dbdir=hqconfig.seendir(self.jobname))
+            seen = Seen(dbdir=hqconfig.seendir(job))
             self.job_seen[job] = seen
         return seen
 
