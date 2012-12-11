@@ -64,6 +64,7 @@ class DiscoveredHandler(object):
         try:
             cj = self.hq.get_job(job)
         except Exception as ex:
+            logging.exception('get_job(%r) failed', job)
             result['error'] = str(ex)
             return result
 

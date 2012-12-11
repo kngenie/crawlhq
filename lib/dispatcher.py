@@ -10,11 +10,13 @@ from Queue import Queue, Empty, Full
 import time
 
 import hqconfig
-from seen import Seen
 from filequeue import FileDequeue, FileEnqueue
 import sortdequeue
 import urihash
-from cfpgenerator import FPGenerator
+try:
+    from cfpgenerator import FPGenerator
+except:
+    from fpgenerator import FPGenerator
 from scheduler import Scheduler, WorkSet
 from diverter import Diverter
 
@@ -220,18 +222,19 @@ class Dispatcher(object):
         if self.inq is None:
             self.inq = FileDequeue(qdir, reader=FPSortingQueueFileReader)
         # seen database is initialized lazily
-        #self.seen = Seen(dbdir=hqconfig.seendir(self.jobname))
+        self.seenfactory = hqconfig.factory.seenfactory()
         self.seen = None
         self.diverter = Diverter(self.jobname, self.mapper)
         self.excludedlist = ExcludedList(self.jobname)
 
         self.workset_state = [0 for i in range(self.mapper.nworksets)]
 
-        # TODO: this could be combined with FileDequeue above in a single class
-        if Dispatcher.inqwatcher is None:
-            iqw = Dispatcher.inqwatcher = InqueueWatcher()
-            iqw.start()
-        self.watch = Dispatcher.inqwatcher.addwatch(hqconfig.inqdir(self.jobname))
+        if os.uname()[0] == 'Linux':
+            # TODO: this could be combined with FileDequeue above in a single class
+            if Dispatcher.inqwatcher is None:
+                iqw = Dispatcher.inqwatcher = InqueueWatcher()
+                iqw.start()
+            self.watch = Dispatcher.inqwatcher.addwatch(hqconfig.inqdir(self.jobname))
 
     def shutdown(self):
         #if self.job: self.job.shutdown()
@@ -292,13 +295,7 @@ class Dispatcher(object):
 
     def init_seen(self):
         if not self.seen:
-            try:
-                cachesize = hqconfig.get('seencache')
-                if cachesize: cachesize = int(cachesize)*(1024**2)
-            except:
-                cachesize = None
-            self.seen = Seen(dbdir=hqconfig.seendir(self.jobname),
-                             block_cache_size=cachesize)
+            self.seen = self.seenfactory(self.jobname)
 
     def processinq(self, maxn):
         '''process incoming queue. maxn paramter adivces

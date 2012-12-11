@@ -5,6 +5,8 @@ import unittest
 from dispatcher import *
 from filequeue import FileEnqueue
 
+import testseen
+
 class WorksetMapperTestCase(unittest.TestCase):
     def setUp(self):
         self.mapper = WorksetMapper(8)
@@ -70,7 +72,7 @@ class DispatcherTestCase(unittest.TestCase):
         return items
 
     def testRegular(self):
-        curi = dict(u='http://test.example.com/')
+        curi = dict(u='http://test.example.com/1')
         self.enq.queue([curi])
         self.enq.close()
 
@@ -85,7 +87,7 @@ class DispatcherTestCase(unittest.TestCase):
         assert self.scheduler.curis[0]['u'] == curi['u']
 
     def testSeen(self):
-        curi1 = dict(u='http://test.example.com/')
+        curi1 = dict(u='http://test.example.com/2')
         self.dispatcher.init_seen()
         self.dispatcher.seen.already_seen(curi1)
 
@@ -104,7 +106,7 @@ class DispatcherTestCase(unittest.TestCase):
         assert len(self.scheduler.curis) == 0, self.scheduler.curis
 
     def testExcluded(self):
-        curi = dict(u='http://test.example.com/')
+        curi = dict(u='http://test.example.com/3')
         self.domaininfo.excluded = 1
 
         self.enq.queue([curi])
@@ -119,6 +121,7 @@ class DispatcherTestCase(unittest.TestCase):
 
         self.dispatcher.shutdown()
 
+        # print exclude qfile content
         subprocess.check_call(
             'zcat %s/*.gz' % self.dispatcher.excludedlist.qdir,
             shell=1)

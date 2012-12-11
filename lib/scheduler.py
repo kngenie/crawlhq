@@ -1,5 +1,4 @@
 import sys, os
-import pymongo
 import time
 import re
 import itertools

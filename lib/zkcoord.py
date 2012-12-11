@@ -145,7 +145,7 @@ class Coordinator(object):
                 mtime = nodevals[1]['mtime']
                 status['jobs'].append(dict(name=j, ts=mtime/1000.0))
         except zk.NoNodeException:
-            status['jobs'] = null;
+            status['jobs'] = None;
         return status
 
     def get_servers_status(self):

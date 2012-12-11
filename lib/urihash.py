@@ -1,4 +1,7 @@
-from cfpgenerator import FPGenerator
+try:
+    from cfpgenerator import FPGenerator
+except:
+    from fpgenerator import FPGenerator
 
 _fp64 = FPGenerator(0xD74307D3FD3382DB, 64)
 
