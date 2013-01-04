@@ -1,0 +1,8 @@
+#!/bin/bash
+#
+PG=$0
+test -h $PG && PG=$(readlink $PG)
+BIN=$(basename $PG)
+LIB=$(cd $BIN/../lib; pwd)
+export PYTONPATH=$LIB
+/usr/bin/python -m shuffle
