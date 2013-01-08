@@ -18,9 +18,7 @@ def worksetdir(job):
 def cachedir():
     return os.path.join(get('datadir'), get('cachedir'))
 
-ZKHOSTS = ['crawl433.us.archive.org:2181',
-           'crawl434.us.archive.org:2181',
-           'crawl402.us.archive.org:2181']
+ZKHOSTS = ['localhost:2181']
 
 DEFAULT_CONFIG = [
     # HQ data directory

@@ -22,7 +22,8 @@ def create_flags(s):
     return f
     
 class Coordinator(object):
-    def __init__(self, zkhosts, root=NODE_HQ_ROOT, alivenode='alive'):
+    def __init__(self, zkhosts, root=NODE_HQ_ROOT, alivenode='alive',
+                 readonly=False):
         """zkhosts: a string or a list. list will be ','.join-ed into a string.
         root: root node path (any parents must exist, if any)
         """
@@ -32,28 +33,45 @@ class Coordinator(object):
         self.zkhosts = zkhosts
         self.ROOT = root
         self.alivenode = alivenode
+        self.readonly = readonly
         self.nodename = os.uname()[1]
 
         self.NODE_SERVERS = self.ROOT + '/servers'
         self.NODE_ME = self.NODE_SERVERS+'/'+self.nodename
+        self.NODE_GJOBS = self.ROOT + '/jobs'
 
-        self.zh = zk.init(self.zkhosts, self.__watcher)
+        # allow system to start without ZooKeeper
+        if self._connect():
 
-        self.jobs = {}
+            self.jobs = {}
 
-        self.initialize_node_structure()
+            if not readonly:
+                self.initialize_node_structure()
 
-        if not zk.exists(self.zh, self.NODE_ME):
-            zk.create(self.zh, self.NODE_ME, '', PERM_WORLD)
+                if not zk.exists(self.zh, self.NODE_ME):
+                    zk.create(self.zh, self.NODE_ME, '', PERM_WORLD)
 
-        # setup notification
-        zk.get_children(self.zh, self.NODE_SERVERS, self.__servers_watcher)
-        #zk.get_children(self.zh, self.NODE_ME, self.__watcher)
+            # setup notification
+            zk.get_children(self.zh, self.NODE_SERVERS, self.__servers_watcher)
+            #zk.get_children(self.zh, self.NODE_ME, self.__watcher)
 
-        self.NODE_JOBS = self.NODE_ME+'/jobs'
-        zk.acreate(self.zh, self.NODE_JOBS, '', PERM_WORLD)
+            if not readonly:
+                self.NODE_JOBS = self.NODE_ME+'/jobs'
+                zk.acreate(self.zh, self.NODE_JOBS, '', PERM_WORLD)
 
-        #self.publish_alive()
+            #self.publish_alive()
+
+    def _connect(self):
+        try:
+            self.zh = zk.init(self.zkhosts, self.__watcher)
+            self.zkerror = None
+            return True
+        except zk.ZooKeeperException, ex:
+            self.zh = None
+            self.zkerror = ex
+            return False
+    def get_status_text(self):
+        return self.zkerror
 
     def create(self, path, data='', perm=PERM_WORLD, flags=''):
         return zk.create(self.zh, path, data, perm, create_flags(flags))
@@ -66,13 +84,15 @@ class Coordinator(object):
             pass
 
     def initialize_node_structure(self):
+        # /hq
         if not zk.exists(self.zh, self.ROOT):
             self.create(self.ROOT)
 
+        # /hq/servers
         if not zk.exists(self.zh, self.NODE_SERVERS):
             self.create(self.NODE_SERVERS)
 
-        self.NODE_GJOBS = self.ROOT + '/jobs'
+        # /hq/jobs
         if not zk.exists(self.zh, self.NODE_GJOBS):
             self.create(self.NODE_GJOBS)
         
@@ -85,7 +105,7 @@ class Coordinator(object):
             elif state == zk.EXPIRED_SESSION_STATE:
                 # unrecoverable state - close and reconnect
                 zk.close(self.zh)
-                self.zh = zk.init(self.zkhosts, self.__watcher)
+                self._connect()
 
     def __servers_watcher(self, zh, evtype, state, path):
         try:
@@ -128,12 +148,14 @@ class Coordinator(object):
         return zk.get_children(self.zh, self.NODE_SERVERS)
 
     def get_status_of(self, server=None):
+        if self.zh is None: return None
         server = server or self.nodename
         status = dict(name=server)
         try:
             node = zk.get(self.zh, self.NODE_SERVERS+'/'+server+'/alive')
             status['alive'] = node[1]
         except zk.NoNodeException:
+            status['alive'] = False
             pass
         try:
             jobspath = self.NODE_SERVERS+'/'+server+'/jobs'
@@ -150,6 +172,27 @@ class Coordinator(object):
 
     def get_servers_status(self):
         return [self.get_status_of(server) for server in self.get_servers()]
+
+    def get_job_servers(self, jobname):
+        """return a map of integer identifier to server name, which
+        is configured for the job jobname.
+        """
+        p = self.NODE_GJOBS+'/'+jobname+'/servers'
+        svids = zk.get_children(self.zh, p)
+        servers = {}
+        for name in svids:
+            try:
+                svid = int(name)
+            except:
+                continue
+            nodevals = zk.get(self.zh, p+'/'+name)
+            if nodevals[0]:
+                servers[svid] = nodevals[0]
+        return servers
+
+    def is_server_alive(self, server):
+        p = self.NODE_SERVERS+'/'+server+'/alive'
+        return zk.exists(self.zh, p)
 
     def shutdown(self):
         if self.zh:

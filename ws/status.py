@@ -69,7 +69,11 @@ class Status(BaseApp):
         db.connection.end_request()
 
         status = coord.get_status_of()
-        if status['jobs']:
+        if not status:
+            # Coordinator is down
+            errors = [coord.get_status_text()]
+            jobs = []
+        elif status['jobs']:
             timelimit = time.time() - 24*3600
             for j in status['jobs']:
                 print >>sys.stderr, "%s" % (j,)
