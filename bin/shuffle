@@ -5,4 +5,4 @@ test -h $PG && PG=$(readlink $PG)
 BIN=$(basename $PG)
 LIB=$(cd $BIN/../lib; pwd)
 export PYTONPATH=$LIB
-/usr/bin/python -m shuffle
+/usr/bin/python -m shuffle $1
