@@ -7,7 +7,7 @@ module1 = Extension('cfpgenerator',
 module2 = Extension('leveldb',
                     language='c++',
                     sources=['leveldb.cpp'],
-                    libraries=['leveldb'])
+                    libraries=['leveldb', 'snappy'])
 
 setup(name='cFPGenerator',
       version='0.1',
