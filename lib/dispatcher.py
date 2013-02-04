@@ -217,9 +217,9 @@ class Dispatcher(object):
         self.scheduler = scheduler
 
         # TODO: inject these objects from outside
-        qdir = hqconfig.inqdir(self.jobname)
         self.inq = inq
         if self.inq is None:
+            qdir = hqconfig.inqdir(self.jobname)
             self.inq = FileDequeue(qdir, reader=FPSortingQueueFileReader)
         # seen database is initialized lazily
         self.seenfactory = hqconfig.factory.seenfactory()
@@ -234,7 +234,10 @@ class Dispatcher(object):
             if Dispatcher.inqwatcher is None:
                 iqw = Dispatcher.inqwatcher = InqueueWatcher()
                 iqw.start()
-            self.watch = Dispatcher.inqwatcher.addwatch(hqconfig.inqdir(self.jobname))
+            self.watch = Dispatcher.inqwatcher.addwatch(self.inq.qdir)
+
+        # stats
+        self.processedcount = 0
 
     def shutdown(self):
         #if self.job: self.job.shutdown()
@@ -254,6 +257,12 @@ class Dispatcher(object):
         """flushes URIs buffered in workset objects"""
         #return self.job.flush()
         
+    def get_status(self):
+        r = dict(
+            processedcount=self.processedcount
+            )
+        return r
+
     def is_client_active(self, clid):
         """is client clid active?"""
         # TODO: update ZooKeeper when active status changes
@@ -314,6 +323,7 @@ class Dispatcher(object):
             
             result['td'] += (time.time() - t0)
             if furi is None: break
+            self.processedcount += 1
             result['processed'] += 1
             ws = self.mapper.workset(furi)
             if self.is_workset_active(ws):

@@ -4,15 +4,19 @@ import sys, os
 import re
 from threading import Thread, RLock, Condition, Event
 import time
-import mmap
 from filequeue import FileEnqueue, FileDequeue
 import logging
-from executor import ThreadPoolExecutor
 
 class IncomingQueue(object):
     # default maxsize 1GB - this would be too big for multi-queue
     # settings
-    def __init__(self, qdir, noupdate=False, norecover=False, **kw):
+    def __init__(self, qdir, noupdate=False, norecover=False,
+                 enq=FileEnqueue,
+                 deq=FileDequeue,
+                 **kw):
+        self.deq_factory = deq
+        self.enq_factory = enq
+
         # ensure qdir directory exists
         self.qdir = qdir
         if not os.path.isdir(self.qdir):
@@ -30,64 +34,61 @@ class IncomingQueue(object):
 
     def init_queues(self, buffsize=0, maxsize=1000*1000*1000):
         # dequeue side
-        self.rqfile = FileDequeue(self.qdir)
+        self.deq = self.deq_factory and self.deq_factory(self.qdir)
         # single queue file, no asynchronous writes
-        self.qfiles = [FileEnqueue(self.qdir, buffer=buffsize,
-                                   maxsize=maxsize)]
+        self.enq = self.enq_factory and self.enq_factory(
+            self.qdir, buffer=buffsize, maxsize=maxsize)
 
     @property
     def buffsize(self):
-        self.qfiles[0].buffer_size
+        return self.enq and self.enq.buffer_size
     @buffsize.setter
     def buffsize(self, v):
-        for enq in self.qfiles:
-            enq.buffer_size = v
+        if self.enq:
+            self.enq.buffer_size = v
 
     def __del__(self):
         self.shutdown()
 
     def close(self, blocking=True):
-        if self.qfiles:
-            for q in self.qfiles:
-                # close should block until all pending writes complete
-                q.close(blocking=blocking)
+        if self.enq:
+            self.enq.close(blocking=blocking)
             
     def flush(self):
-        if self.qfiles:
-            for q in self.qfiles:
-                q._flush()
+        if self.enq:
+            self.enq._flush()
 
     def shutdown(self):
-        if self.rqfile:
-            self.rqfile.close()
+        if self.deq: self.deq.close()
         # _flush should be part of close, but not now.
         self.flush()
         self.close()
 
     def get_status(self):
-        buffered = sum([enq.buffered_count for enq in self.qfiles])
+        #buffered = sum([enq.buffered_count for enq in self.qfiles])
         r = dict(addedcount=self.addedcount,
                  processedcount=self.processedcount,
-                 queuefilecount=self.rqfile.qfile_count(),
-                 dequeue=self.rqfile.get_status(),
-                 bufferedcount=buffered
+                 queuefilecount=self.deq and self.deq.qfile_count(),
+                 dequeue=self.deq and self.deq.get_status(),
+                 bufferedcount=self.enq and dself.enq.buffered_count
                  )
-        if self.rqfile:
-            r['queuefilecount'] = self.rqfile.qfile_count()
+        if self.deq:
+            r['queuefilecount'] = self.deq.qfile_count()
         return r
 
     def add(self, curis):
+        if not self.enq: raise NotImplementedError, 'enq side is not set up'
         result = dict(processed=0)
         for curi in curis:
-            enq = self.qfiles[0]
-            enq.queue(curi)
+            self.enq.queue(curi)
 
             self.addedcount += 1
             result['processed'] += 1
         return result
 
     def get(self, timeout=0.0):
-        o = self.rqfile.get(timeout)
+        if not self.deq: raise NotImplementedError, 'deq side is not set up'
+        o = self.deq.get(timeout)
         # if queue exhausted, try closing current enq
         # leave busy queues
         if not o:
@@ -95,68 +96,55 @@ class IncomingQueue(object):
         if o: self.processedcount += 1
         return o
 
-class SplitIncomingQueue(object):
+class SplitEnqueue(object):
+    """FileEnqueue compatible object that distribute incoming URLs
+    into multiple FlieEnqueues based on id range. This scheme
+    has the same effiect of (partial) merge sort and makes seen
+    check much faster by take advantage of block cache.
+    as all queue files go into qdir, FileDequeue can read from them.
+    """
+    def __init__(self, qdir, splitter):
+        self.splitter = splitter
+        self.queue_writer = AsyncFlusher()
+        self.enqs = [FileEnqueue(self.qdir, suffix=str(win))
+                     for win in range(self.splitter.nqueues)]
+    def queue(self, curi):
+        # shall return 0..self.splitter.nqueues
+        win = self.splitter.hash(curi)
+        enq = self.enqs[win]
+        enq.queue(curi)
+
+class SplitIncomingQueue(IncomingQueue):
     '''IncomingQueue variant that stores incoming URLs into
        multiple queue files, grouping by id range. This scheme
        has the same effect with merge sort and makes seen check
        much faster.'''
-    def __init__(self, job, qdirbase, splitter):
+    def __init__(self, job, qdir, splitter):
+        super(SplitIncomingQueue, self).__init__(
+            qdir, enq=SplitEnqueue, splitter=splitter)
 
-        self.job = job
-        self.splitter = splitter
-        # ensure job directory exists
-        self.qdir = os.path.join(qdirbase, job)
-        if not os.path.isdir(self.qdir):
-            os.makedirs(self.qdir)
+    # def hash(self, curi):
+    #     if 'id' in curi:
+    #         return curi['id']
+    #     else:
+    #         h = Seen.urikey(curi['u'])
+    #         curi['id'] = h
+    #         return h
 
-        self.addedcount = 0
-        self.processedcount = 0
+    # def add(self, curis):
+    #     result = dict(processed=0)
+    #     for curi in curis:
+    #         h = self.hash(curi)
+    #         win = (h >> self.window_bits) & self.win_mask
+    #         enq = self.enqs[win]
+    #         enq.queue(curi)
 
-        self.maxsize = 1000*1000*1000 # 1GB
+    #         self.addedcount += 1
+    #         result['processed'] += 1
+    #     return result
 
-        self.queue_writer = AsyncFlusher()
-        self.enqs = [FileEnqueue(self.qdir, suffix=str(win))
-                     for win in range(self.splitter.nqueues)]
-
-        # dequeue side
-        #self.lastqfile = None
-        self.rqfile = FileDequeue(self.qdir)
-
-        self.qfile_read = 0
-        self.qfile_written = 0
-
-    def __del__(self):
-        self.close()
-
-    def close(self):
-        for enq in self.enqs:
-            enq.close()
-
-    def shutdown(self):
-        self.close()
-
-    def hash(self, curi):
-        if 'id' in curi:
-            return curi['id']
-        else:
-            h = Seen.urikey(curi['u'])
-            curi['id'] = h
-            return h
-
-    def add(self, curis):
-        result = dict(processed=0)
-        for curi in curis:
-            h = self.hash(curi)
-            win = (h >> self.window_bits) & self.win_mask
-            enq = self.enqs[win]
-            enq.queue(curi)
-
-            self.addedcount += 1
-            result['processed'] += 1
-        return result
-
-    def get(self, timeout=0.0):
-        o = self.rqfile.get(timeout)
-        # TODO: if queue exhausted, try closing largest enq
-        if o: self.processedcount += 1
-        return o
+    # def get(self, timeout=0.0):
+    #     o = self.rqfile.get(timeout)
+    #     # TODO: if queue exhausted, try closing largest enq
+    #     if o: self.processedcount += 1
+    #     return o

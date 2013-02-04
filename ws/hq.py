@@ -18,6 +18,8 @@ import logging
 import hqconfig
 from fileinq import IncomingQueue
 from filequeue import FileEnqueue, FileDequeue, DummyFileDequeue
+from pooledqueue import PooledEnqueue
+from priorityqueue import PriorityEnqueue, PriorityDequeue
 from scheduler import Scheduler
 from executor import *
 import urihash
@@ -66,52 +68,17 @@ class CrawlMapper(WorksetMapper):
                 if self.worksetclient[i] == clid]
         return qids
 
+    def clientforwsid(self, wsid):
+        if wsid < 0 or wsid >= len(self.worksetclient):
+            raise ValueError, 'wsid %d out range (0-%d)' % (
+                wsid, len(self.worksetclient) - 1)
+        return self.worksetclient[wsid]
+
     def client_activating(self, clid):
         """called back by Scheduler when client gets a new feed request
         when it is inactive."""
         for wsid in self.wsidforclient(clid):
             self.crawljob.workset_activating(wsid)
-
-class PooledIncomingQueue(IncomingQueue):
-    def init_queues(self, n=5, buffsize=0, maxsize=1000*1000*1000,
-                    readsorted=1):
-        maxsize = maxsize / n
-        self.write_executor = ThreadPoolExecutor(poolsize=1, queuesize=100)
-        print >>sys.stderr, "PooledIncomingQueue.readsorted=%r" % readsorted
-        if readsorted:
-            self.rqfile = FileDequeue(self.qdir, reader=FPSortingQueueFileReader)
-        else:
-            self.rqfile = FileDequeue(self.qdir)
-        #self.rqfile = DummyFileDequeue(self.qdir)
-        self.qfiles = [FileEnqueue(self.qdir, suffix=str(i),
-                                   maxsize=maxsize,
-                                   buffer=buffsize,
-                                   executor=self.write_executor)
-                       for i in range(n)]
-        self.avail = LifoQueue()
-        for q in self.qfiles:
-            self.avail.put(q)
-
-    def shutdown(self):
-        super(PooledIncomingQueue, self).shutdown()
-        self.write_executor.shutdown()
-
-    def add(self, curis):
-        processed = 0
-        t0 = time.time()
-        enq = self.avail.get()
-        t = time.time() - t0
-        if t > 0.1: logging.warn('self.avail.get() %.4f', t)
-        try:
-            enq.queue(curis)
-            self.addedcount += len(curis)
-            processed += len(curis)
-            return dict(processed=processed)
-        finally:
-            t0 = time.time()
-            self.avail.put(enq)
-            t = time.time() - t0
-            if t > 0.1: logging.warn('slow self.avail.put() %.4f', t)
 
 class CrawlJob(object):
 
@@ -127,10 +94,16 @@ class CrawlJob(object):
             readsorted = int(hqconfig.get(('inq', 'sort'), 1))
         except:
             readsorted = 1
-        self.inq = PooledIncomingQueue(
+        
+        self.eninq = PriorityEnqueue(
             qdir=hqconfig.inqdir(self.jobname),
-            buffsize=1000,
-            readsorted=readsorted)
+            buffer=1000)
+        
+        deinqargs = {}
+        if readsorted:
+            deinqargs['reader'] = FPSortingQueueFileReader
+        self.deinq = PriorityDequeue(qdir=hqconfig.inqdir(self.jobname),
+                                     **deinqargs)
 
         self._dispatcher_mode = hqconfig.get(
             ('jobs', self.jobname, 'dispatcher'), 'internal')
@@ -143,6 +116,9 @@ class CrawlJob(object):
         self.save_crawlinfo = False
 
         self.last_inq_count = 0
+
+        self.addedcount = 0
+        self.processedcount = 0
 
     PARAMS = [('use_crawlinfo', bool),
               ('save_crawlinfo', bool),
@@ -165,7 +141,7 @@ class CrawlJob(object):
                                      self.jobname,
                                      mapper=self.mapper,
                                      scheduler=self.scheduler,
-                                     inq=self.inq.rqfile)
+                                     inq=self.deinq)
         
     def shutdown_dispatcher(self):
         if not self.dispatcher: return
@@ -177,15 +153,21 @@ class CrawlJob(object):
         logging.info("shutting down scheduler")
         self.scheduler.shutdown()
         logging.info("closing incoming queues")
-        self.inq.flush()
-        self.inq.close()
+        self.eninq._flush()
+        self.eninq.close()
         self.shutdown_dispatcher()
         logging.info("done.")
 
     def get_status(self):
         r = dict(job=self.jobname, oid=id(self))
         r['sch'] = self.scheduler and self.scheduler.get_status()
-        r['inq'] = self.inq and self.inq.get_status()
+        r['inq'] = dict(
+            addedcount=self.addedcount,
+            processedcount=self.processedcount,
+            queuefilecount=self.deinq.qfile_count(),
+            dequeue=self.deinq and self.deinq.get_status(),
+            enqueue=self.eninq and self.eninq.get_status()
+            )
         return r
 
     def get_workset_status(self):
@@ -209,7 +191,11 @@ class CrawlJob(object):
         return dict(processed=scheduled, scheduled=scheduled)
 
     def discovered(self, curis):
-        return self.inq.add(curis)
+        processed = 0
+        self.eninq.queue(curis)
+        self.addedcount += len(curis)
+        processed += len(curis)
+        return dict(processed=processed)
 
     def processinq(self, maxn):
         self.init_dispatcher()
@@ -242,9 +228,9 @@ class CrawlJob(object):
         # if client queue is empty, request incoming queue to flush
         if not r:
             # but do not flush too frequently.
-            if self.inq.addedcount > self.last_inq_count + 1000:
-                self.inq.flush
-                self.last_inq_count = self.inq.addedcount
+            if self.addedcount > self.last_inq_count + 1000:
+                self.eninq.close()
+                self.last_inq_count = self.addedcount
         return r
 
     def finished(self, curis):
@@ -263,8 +249,7 @@ class CrawlJob(object):
         return self.scheduler.reset(client)
 
     def flush(self):
-        self.inq.flush()
-        self.inq.close()
+        self.eninq.close()
         return self.scheduler.flush_clients()
 
 class Headquarters(object):
@@ -516,7 +501,20 @@ class ClientAPI(QueryApp, DiscoveredHandler):
             return dict(success=1)
         except Exception as ex:
             return dict(success=0, error=str(ex))
-             
+
+    def do_which(self, job):
+        p = web.input(u=None)
+        u = p.u
+        if not u:
+            return dict(success=0, u=u)
+        if not re.match(r'https?://', u):
+            u = 'http://' + u
+        job = hq.get_job(job)
+        ws = job.mapper.workset(dict(u=u))
+        clid = job.mapper.clientforwsid(ws)
+
+        return dict(success=1, u=u, ws=ws, client=clid)
+        
 def setuplogging(level=logging.INFO, filename='hq.log'):
     logsdir = os.path.join(hqconfig.get('datadir'), 'logs')
     if not os.path.isdir(logsdir): os.makedirs(logsdir)

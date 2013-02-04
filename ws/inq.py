@@ -12,21 +12,22 @@ import re
 import web
 import logging
 import atexit
+import threading
 
 #import pymongo
 
 from executor import *
 import hqconfig
 #from mongojobconfigs import JobConfigs
-from fileinq import IncomingQueue
-from filequeue import FileEnqueue
+#from filequeue import FileEnqueue
+from priorityqueue import PriorityEnqueue
 from weblib import QueryApp
 from handlers import DiscoveredHandler
 
 class CrawlJob(object):
     def __init__(self, jobconfig, maxqueuesize=4*1000*1000):
         self.jobconfig = jobconfig
-        self.enq = FileEnqueue(qdir=hqconfig.inqdir(self.jobconfig.name),
+        self.enq = PriorityEnqueue(qdir=hqconfig.inqdir(self.jobconfig.name),
                                suffix=os.getpid(),
                                maxsize=maxqueuesize,
                                buffer=1000,
