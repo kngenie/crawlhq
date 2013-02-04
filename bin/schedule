@@ -1,4 +1,236 @@
 #!/usr/bin/python
-# scheduler that supports distributing URIs to particular HQ server dealing
-# with the domain.
+# 
+import sys
+import re
+import os
+from urllib import urlencode
+#import urllib2
+import time
+from optparse import OptionParser
+import httplib
+import json
+from gzip import GzipFile
 
+HQ_HOST = 'localhost'
+HQ_PATH_DISCOVERED = '/hq/jobs/%s/discovered'
+HQ_PATH_MDISCOVERED = '/hq/jobs/%s/mdiscovered'
+HQ_PATH_FLUSH = '/hq/jobs/%s/flush'
+
+MASTER_HOST = 'localhost'
+MASTER_PATH_MDISCOVERED = '/hq/master/jobs/%s/mdiscovered'
+
+opt = OptionParser()
+opt.add_option('-j', '--job', action='store', dest='job', default=None,
+               metavar='JOB',
+               help='name of crawl job to which URLs are queued (required)')
+opt.add_option('-f', '--format', action='store', dest='format', type='choice',
+               default='seed',
+               help='format of input file: seed(default), divert, uvpx, queue',
+               metavar='FORMAT',
+               choices=('seed', 'divert', 'uvpx', 'queue'))
+opt.add_option('-F', '--force-schedule', action='store_true',
+               dest='force_schedule', default=False,
+               help='force scheduling regardless of seen status')
+opt.add_option('-b', '--batchsize', action='store', dest='batchsize',
+               type='int', default=500,
+               help='max number of CURIs to submit in a batch')
+opt.add_option('-H', '--hq', action='store', dest='hq_host', default=None,
+               help='host name of server running HQ')
+opt.add_option('-D', '--delete-finished', action='store_true',
+               dest='delete_finished', default=False,
+               help='delete input file when successfully finished')
+opt.add_option('--flush', action='store_true', dest='flush',
+               default=False, help='call flush when scheduling finishes')
+opt.add_option('-m', '--master', action='store_true', dest='asmaster',
+               default=False, help='submitting to a master')
+opt.add_option('-v', '--verbose', action='store_true', dest='verbose',
+               default=False, help='enables extra trace output')
+opt.add_option('-I', action='append', dest='urls', metavar='URL',
+               help='schedule URL specified (in addition to any other input)')
+
+def submit(curls, conn):
+    reqpath = (MASTER_PATH_MDISCOVERED if options.asmaster
+               else HQ_PATH_MDISCOVERED) % options.job
+    headers = {
+        'Content-Type': 'text/json'
+        }
+    if options.force_schedule:
+        curls = dict(f=1, u=curls)
+    conn.request('POST', reqpath, json.dumps(curls, separators=',:'),
+                 headers)
+    r = conn.getresponse()
+    data = r.read()
+    if options.verbose: print >>sys.stderr, data
+    if r.status != 200:
+        print >>sys.stderr, r.status, r.reason
+        print data
+        return False
+    return True
+
+def flush():
+    print >>sys.stderr, "flushing queue..."
+    hq_host = options.hq_host or \
+        MASTER_HOST if options.asmaster else HQ_HOST
+    conn = httplib.HTTPConnection(hq_host)
+    reqpath = HQ_PATH_FLUSH % options.job
+    conn.request('GET', reqpath)
+    r = conn.getresponse()
+    data = r.read()
+    if r.status != 200:
+        print >>sys.stderr, r.status, r.reason
+    print data
+
+def process(finput, format):
+    count = 0
+    dropcount = 0
+    failcount = 0
+    ignoredschemes = set()
+
+    hq_host = options.hq_host or \
+        (MASTER_HOST if options.asmaster else HQ_HOST)
+    conn = httplib.HTTPConnection(hq_host)
+    parser = PARSERS[format]
+    batch = []
+    for l in finput:
+        count += 1
+        l = l.rstrip()
+        try:
+            curl = parser(l)
+        except ValueError as ex:
+            print >>sys.stderr, 'bad line: %s (%s)' % (l, ex)
+            dropcount += 1
+            continue
+        if curl is None:
+            # comment etc. - can be silently ignored
+            count -= 1
+            continue
+        #print >>sys.stderr, curl['u']
+        print >>sys.stderr, "\r  %d" % count,
+        pcolon = curl['u'].find(':')
+        if pcolon <= 0:
+            print >>sys.stderr, 'bad scheme: %s' % l
+            dropcount += 1
+            continue
+        scheme = curl['u'][:pcolon]
+        if scheme not in ('http', 'https', 'ftp'):
+            ignoredschemes.add(scheme)
+            dropcount += 1
+            continue
+
+        batch.append(curl)
+        if len(batch) >= options.batchsize:
+            if submit(batch, conn):
+                pass
+            else:
+                failcount += len(batch)
+            batch = []
+
+    if len(batch) > 0:
+        if submit(batch, conn):
+            pass
+        else:
+            failcount += len(batch)
+        batch = []
+
+    conn.close()
+
+    return (count, dropcount, failcount, ignoredschemes)
+
+def parse_seed(line):
+    if re.match(r'\s*(#.*)?$', line):
+        return None
+    if not re.match(r'[a-z]+://', line):
+        line = 'http://' + line + '/'
+    return dict(u=line, p='')
+
+def parse_divert(line):
+    fields = re.split(r'\s+', line)
+    if len(fields) < 5:
+        raise ValueError, 'must have 5 fields at least'
+    if fields[1] != 'CrawlURI':
+        raise ValueError, 'second field should be "CrawlURI"'
+    # divert file has no context info
+    return dict(u=fields[2], p=fields[3], v=fields[4])
+
+def parse_uvpx(line):
+    fields = re.split(r'\s+', line)
+    if len(fields) != 4:
+        return None
+    r = dict(u=fields[0])
+    if fields[1] != 'null': r['v'] = fields[1]
+    if fields[2] != 'null': r['p'] = fields[2]
+    if fields[3] != 'null': r['x'] = fields[3]
+    return r
+
+def parse_queue(line):
+    """Headquarters queue file format"""
+    if line[0] == '#': return None
+    if line[0] == ' ': line = line[1:]
+    if line[0] != '{': return None
+    o = json.loads(line)
+    u = o.get('u')
+    if not u: return None
+    r = dict(u=u)
+    a = o.get('a')
+    if a:
+        for k in 'vpx':
+            if k in a: r[k] = a[k]
+    w = o.get('w')
+    if w:
+        for k in 'vpx':
+            if k in w: r[k] = w[k]
+    return r
+
+def report(st, start):
+    elapsed = time.time() - start
+    submitcount = st[0] - st[1]
+    print st
+    print '  {0} ({1} dropped, {2} failed) in {4:.1f}s'.format(*(st + (elapsed,)))
+    if submitcount > 0:
+        print '  %.2f URI/s' % (submitcount / elapsed)
+    if len(st[3]) > 0:
+        print '  ignored schemes:'
+        for scheme in sorted(st[3]):
+            print '    %s' % scheme
+        
+PARSERS = {'seed': parse_seed, 'divert': parse_divert,
+           'uvpx': parse_uvpx, 'queue': parse_queue}
+
+options, args = opt.parse_args()
+
+if options.job is None or options.job == '':
+    print >>sys.stderr, 'non-empty crawl job name (-j/--job) is required'
+    exit(1)
+if not re.match(r'[a-zA-Z][a-zA-Z0-9]*$', options.job):
+    print >>sys.stderr, 'crawl job name must start with alphabet,' \
+        'followed by alpha-numerics'
+    exit(1)
+
+if len(args) == 0 and not options.urls:
+    if options.delete_finished:
+        print >>sys.stderr, "WARNING: --delete-finished has no effect when reading from STDIN"
+    start = time.time()
+    print "STDIN"
+    st = process(sys.stdin, options.format)
+    report(st, start)
+else:
+    if options.urls:
+        start = time.time()
+        st = process(options.urls, 'seed')
+        report(st, start)
+
+    for file in args:
+        print file
+        if file.endswith('.gz'):
+            f = GzipFile(filename=file)
+        else:
+            f = open(file)
+        start = time.time()
+        st = process(f, options.format)
+        f.close()
+        report(st, start)
+        if options.delete_finished and st[2] == 0:
+            print >>sys.stderr, 'deleting %s' % file
+            os.remove(file)
+if options.flush:
+    flush()
