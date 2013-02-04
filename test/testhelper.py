@@ -1,6 +1,7 @@
 import sys
 import os
 import subprocess
+import shutil
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '../lib'))
 
@@ -15,7 +16,13 @@ class TestDatadir(object):
 
     def cleanup(self):
         """remove all files/dirs under self.path, leaving self.path itself."""
-        subprocess.check_call('/bin/rm -r "%s"/*' % self.path, shell=1)
+        if os.path.isdir(self.path):
+            for fn in os.listdir(self.path):
+                p = os.path.join(self.path, fn)
+                if os.path.isdir(p):
+                    shutil.rmtree(p)
+                else:
+                    os.remove(p)
     def __del__(self):
         if os.path.isdir(self.path):
             self.cleanup()

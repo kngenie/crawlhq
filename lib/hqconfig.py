@@ -54,7 +54,9 @@ def configobj():
 
 def mergeconfig(config):
     global _configobj
-    if isinstance(config, list):
+    if isinstance(config, basestring):
+        config = ConfigObj(config.splitlines())
+    elif isinstance(config, list):
         config = ConfigObj(config)
     elif not isinstance(config, ConfigObj):
         raise ValueError, 'config must be a ConfigObj'

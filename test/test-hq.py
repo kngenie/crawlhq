@@ -11,10 +11,7 @@ import time
 import logging
 
 DATADIR = '/tmp/hq'
-if not os.path.isdir(DATADIR):
-    os.makedirs(DATADIR)
-os.environ['HQCONF'] = '''datadir=%s
-''' % DATADIR
+datadir = testhelper.TestDatadir(DATADIR)
 
 import hqconfig
 import testjobconfigs

@@ -2,6 +2,7 @@
 #
 import sys
 import os
+
 import testhelper
 import unittest
 import json
@@ -11,12 +12,7 @@ from urllib import urlencode
 from jobconfigs import JobConfig
 
 DATADIR = '/tmp/hq'
-if not os.path.isdir(DATADIR):
-    os.makedirs(DATADIR)
-# TODO: too bad to use production mongodb for testing - use mock.
-os.environ['HQCONF'] = '''datadir=%s
-mongo=crawl403
-''' % DATADIR
+datadir = testhelper.TestDatadir(DATADIR)
 
 import testjobconfigs
 
