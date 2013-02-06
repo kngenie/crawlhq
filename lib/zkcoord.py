@@ -178,14 +178,18 @@ class Coordinator(object):
         is configured for the job jobname.
         """
         p = self.NODE_GJOBS+'/'+jobname+'/servers'
-        svids = zk.get_children(self.zh, p)
+        try:
+            svids = zk.get_children(self.zh, p)
+        except zk.NoNodeException, ex:
+            return {}
+            
         servers = {}
         for name in svids:
             try:
                 svid = int(name)
             except:
                 continue
-            nodevals = zk.get(self.zh, p+'/'+name)
+            nodevals = zk.get(self.zh, p+'/'+str(svid))
             if nodevals[0]:
                 servers[svid] = nodevals[0]
         return servers

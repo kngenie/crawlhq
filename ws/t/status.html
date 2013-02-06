@@ -50,6 +50,10 @@ $for i, j in enumerate(jobs):
   <div class="job${' closed' if not j.active else ''}" jobname="${j.name}">
     <div class="jtitle">${i+1}: ${j.name}</div>
     <div class="jobdetail">
+      <div class="jobservers">Servers: 
+      $for svid, svname in j.servers.items():
+        <span class="server">${svid}:${svname}</span>
+      </div>
       <span>Seen: <span class="seencount">-</span></span>
       <button class="update-seencount">Count</button>
       <button class="clear-seen" style="margin-left:2em;color:red;">Clear Seen</button>

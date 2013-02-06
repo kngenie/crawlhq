@@ -117,7 +117,14 @@ class PriorityDequeue(object):
         return modified
 
     def get_status(self):
-        r = dict(queues=[(n, q.get_status()) for n, q in self.queues.items()],
+        queues = []
+        for n, q in self.queues.items():
+            s = q.get_status()
+            s['name'] = str(n)
+            queues.append(s)
+        queuefilecount = sum(q.get('queuefilecount', 0) for q in queues)
+        r = dict(queues=queues,
+                 queuefilecount=queuefilecount,
                  dequeuecount=self.__dequeuecount,
                  curdispensed=self.__curdispensed,
                  curqueue=self.__curqueue)

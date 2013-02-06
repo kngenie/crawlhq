@@ -61,19 +61,40 @@ function seencheck(ev) {
   });
   return false;
 }
-var last_status_update = 0;
-var last_inq_in = 0;
-var last_inq_out = 0;
-function renderstatus(resp, status, xhr) {
+// keeps the last status for each (job, server) pair.
+// key is a string "${job} ${server}".
+var last_status = {};
+
+function renderstatuses(resp) {
+  if (!resp.success) {
+    return;
+  }
+  var servers = resp.servers;
+  var e = jQuery('.jobstatus', '.job[jobname="'+resp.job+'"]');
+  e.empty();
+  for (svid in servers) {
+    var server = servers[svid];
+    server.svid = svid;
+    var ee = jQuery('<fieldset>').attr({svid:svid, server:server.name})
+      .appendTo(e);
+    ee.append(jQuery('<legend>').text(svid+':'+server.name));
+    renderstatus(ee, server);
+  }
+}
+function renderstatus(d, resp) {
   if (!resp.success) {
     return;
   }
   var data = resp.r;
-  //console.log(data);
-  var d = jQuery('.jobstatus', '.job[jobname="'+data.job+'"]');
-  d.empty();
   if ('workqueuesize' in data) {
     jQuery('<div>').text('WorkQueueSize: ' + data.workqueuesize).appendTo(d);
+  }
+  var last_status_update = 0, last_inq_in, last_inq_out;
+  var last = last_status[data.job+' '+resp.name];
+  if (last) {
+    last_status_update = last.update;
+    last_inq_in = last.inq_in;
+    last_inq_out = last.inq_out;
   }
   var inq = data.inq;
   if (inq) {
@@ -105,22 +126,25 @@ function renderstatus(resp, status, xhr) {
 		  ' | ' + nq_text + ', ' + qfile_text +
 		  ' | ' + out_text
 		 );
-    last_status_update = now;
-    last_inq_in = inq.addedcount;
-    last_inq_out = dequeuecount;
+    last_status[data.job+' '+resp.name] = {
+      update: now, inq_in: inq.addedcount, inq_out: dequeuecount
+    };
     d.append(inqdiv);
   }
   var sch = data.sch;
   if (sch) {
-    var clients = sch.clients;
-    if (clients) {
+    if (sch.clients) {
+      var clients = [];
+      jQuery.each(sch.clients, function(k, v) { v.id = k; clients.push(v); });
+      clients.sort(function(a, b){ return a.id - b.id; });
       d.append(jQuery('<div>').html('Clients:'));
       var tbl = jQuery('<table border="1">');
       var r = tbl.get(0).insertRow(-1);
       jQuery.each(['id','scheduled','fed','finished','next','worksets',
 		   'lastfed','lastfed_t','nqfiles'],
              function(i, s){ jQuery(r.insertCell(-1)).text(s); });
-      jQuery.each(clients, function(k, v){
+      jQuery.each(clients, function(i, v){
+	  var k = v.id;
           r = tbl.get(0).insertRow(-1);
           jQuery(r).addClass('client');
           jQuery(r.insertCell(-1)).text(k).attr({align:'right'});
@@ -143,15 +167,16 @@ function getjobname(e) {
   return jQuery(e).closest('.job').attr('jobname');
 }
 function showstatus(ev) {
-  ev.preventDefault();
   var job = getjobname(this);
   if (!job) { alert('failed to identify job name'); return; }
-  jQuery.ajax('jobs/'+job+'/status', {
+  jQuery.ajax('q/statuses', {
     dataType:'json',
-    success: renderstatus,
+    data:{job:job},
+    success: renderstatuses,
     beforeSend: function(){ jQuery(ev.target).addClass('wait'); },
     complete: function() { jQuery(ev.target).removeClass('wait'); }
   });
+  return false;
 }
 function with_comma(n) {
   var digits = String(n).match(/./g);
@@ -218,7 +243,12 @@ function clear_seen(ev) {
 		complete:function(){jQuery(ev.target).removeClass('wait')}
 	});
 }
-
+function toggleJob() {
+  var job = jQuery(this).closest('.job');
+  if (job) {
+    job.toggleClass('closed');
+  }
+}
 jQuery('.seencheck').submit(seencheck);
 jQuery('.showstatus').click(showstatus);
 jQuery('button.update-seencount').click(update_seencount);
@@ -226,3 +256,4 @@ jQuery('button.flush').click(flush_job);
 jQuery('.job').each(function(i, job){
 	jQuery('button.clear-seen', job).click(jQuery.proxy(clear_seen, job));
     });
+jQuery('.jtitle').click(toggleJob);

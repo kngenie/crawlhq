@@ -30,6 +30,8 @@ class JobConfig(object):
         """return dic for updating backend. will return
         those fields modified since last save. for use by JobConfigs."""
         return dict(self.job)
+    def ws_client_map(self):
+        return self.job.get('wscl')
 
 class JobConfigs(object):
     def shutdown(self):

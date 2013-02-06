@@ -9,6 +9,7 @@ import json
 import time
 import re
 from urlparse import urlsplit, urlunsplit
+import urllib2
 import atexit
 import logging
 
@@ -83,6 +84,7 @@ class Status(BaseApp):
             activejobs = set()
         for j in jobs:
             j.active = j.name in activejobs
+            j.servers = coord.get_job_servers(j.name)
         web.header('content-type', 'text/html')
         return self.render('status', jobs, errors)
 
@@ -132,6 +134,59 @@ class Query:
         if p.job:
             r['seencount'] = db.seen[p.job].count()
         return json.dumps(r)
+
+    def do_statuses(self):
+        p = web.input(job=None)
+        if not p.job:
+            raise web.badrequest('no job')
+        web.header('content-type', 'text/json')
+        # TODO: call servers asynchronously?
+        servers = coord.get_job_servers(p.job)
+        statuses = dict()
+        # TODO
+        if not servers:
+            servers = {0: 'localhost'}
+        if servers:
+            for svid, svname in servers.items():
+                ss = self._get_server_status(svname, p.job)
+                statuses[svid] = dict(ss, name=svname)
+        else:
+            r = dict(success=0, job=p.job, servers=None,
+                     err='failed to get server names')
+            return json.dumps(r)
+        r = dict(success=1, job=p.job, servers=statuses)
+        return json.dumps(r)
+
+    def _get_server_status(self, server, job):
+        if server is None:
+            server = 'localhost'
+        url = 'http://%s/hq/jobs/%s/status' % (server, job)
+        try:
+            f = urllib2.urlopen(url, timeout=10)
+            r = f.read()
+            f.close()
+            s = json.loads(r)
+            return s
+        except Exception, ex:
+            return None
+        
+    def do_status(self):
+        p = web.input(job=None, server=None)
+        if not p.job:
+            raise web.badrequest('no job')
+        server = p.server
+        if server is None:
+            server = 'localhost'
+        url = 'http://%s/hq/jobs/%s/status' % (server, p.job)
+        try:
+            f = urllib2.urlopen(url, timeout=10)
+            r = f.read()
+            f.close()
+            return r
+        except Exception, ex:
+            r = dict(success=0, server=server, job=p.job,
+                     err='%s:%s' % (server, str(ex)))
+            return json.dumps(r)
 
     def do_crawlinfocount(self):
         try:
