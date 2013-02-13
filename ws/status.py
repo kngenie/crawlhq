@@ -51,6 +51,8 @@ class Status(BaseApp):
     '''implements control web user interface for crawl headquarters'''
     TMPLDIR = os.path.join(os.path.dirname(__file__), 't')
     def GET(self):
+        if not web.ctx.path.endswith('/'):
+            raise web.seeother(web.ctx.path+'/')
         if setup_problems:
             web.header('content-type', 'text/html')
             return self.render('error_setup', setup_problems)
