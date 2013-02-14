@@ -1,0 +1,44 @@
+#!/usr/bin/python
+#
+import sys
+import os
+sys.path[0:0] = [os.path.join(os.path.dirname(__file__), '../lib')]
+import re
+from optparse import OptionParser
+import time
+import traceback
+import logging
+
+import urihash
+from filequeue import QueueFileWriter
+from sortdequeue import SortingQueueFileReader
+
+def urikey(o):
+    return urihash.urikey(o['u'])
+
+opt = OptionParser('%prog QFILES...')
+options, args = opt.parse_args()
+
+logging.basicConfig(level=logging.INFO)
+
+for qfn in args:
+    newqfn = re.sub(r'\.gz$', '', qfn)+'S'
+    qr = SortingQueueFileReader(qfn, urikey)
+    qw = QueueFileWriter(newqfn)
+
+    chunk = []
+    for o in qr:
+        chunk.append(o)
+        if len(chunk) >= 1000:
+            qw.write(chunk)
+            chunk = []
+    if chunk:
+        qw.write(chunk)
+        chunk = []
+    qr.close()
+    try:
+        os.remove(qfn)
+    except OSError, ex:
+        logging.warn('failed to remove %s: %s', qfn, ex)
+    qw.close()
+

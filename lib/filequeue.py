@@ -266,6 +266,59 @@ class FileEnqueue(object):
         #return self.file.tell()
         return self.__size
 
+class QueueFileWriter(object):
+    """writes objects in queuefile format.
+    """
+    def __init__(self, qfile, gzip=9, mode='wb'):
+        self.fn = qfile
+        self.mode = mode
+        if 'r' in self.mode:
+            raise ValueError, "invalid mode %r ('r' is not allowed)"
+        self.gzip = gzip
+        if self.gzip is not None and not self.fn.endswith('.gz'):
+            self.fn += '.gz'
+        self.f = None
+        self.__size = 0
+        self.open()
+    def open(self):
+        self.f = open(self.fn, self.mode)
+    def close(self, rename=True):
+        if self.f:
+            self.f.close()
+            self.f = None
+        if rename:
+            try:
+                os.rename(self.fn+'.open', self.fn)
+            except OSError as ex:
+                if ex.errno == 2:
+                    logging.warn('failed to rename %s to %s: %s',
+                                 self.fn+'.open', self.fn, ex)
+                else:
+                    raise
+    def size(self):
+        """queue file size (uncompressed if gzip != None)
+        """
+        return self.__size
+    def write(self, objs):
+        if self.f is None:
+            self.open()
+        b = StringIO()
+        for s in objs:
+            b.write(' ')
+            b.write(json.dumps(s, separators=',:'))
+            b.write('\n')
+        data = b.getvalue()
+        if self.gzip is not None:
+            z = GzipFile(fileobj=self.f, mode='wb')
+            z.write(data)
+            z.close()
+            # z.close() does not flush self.f
+            self.f.flush()
+            self.__size += len(data)
+        else:
+            self.f.write(data)
+            self.__size = self.f.tell()
+
 class QueueFileReader(object):
     '''reads (dequeues) from single queue file'''
     def __init__(self, qfile, noupdate=False):
