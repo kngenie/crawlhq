@@ -142,7 +142,11 @@ class PriorityDequeue(object):
     def qfiles_available(self, qfiles):
         # TODO - priority 0 (the highest) would be appropriate for
         # "taken-back" queue files
-        pass
+        with self.__queueslock:
+            if 0 not in self.queues:
+                self.queues[0] = self._new_queue(0)
+        q = self.queues[0]
+        q.qfiles_available(qfiles)
 
     # this is for preventing lower priority queues from blocking higher
     # priority ones indefinitely. higher priority queues still take
