@@ -252,6 +252,21 @@ class CrawlJob(object):
         self.eninq.close()
         return self.scheduler.flush_clients()
 
+    def count_seen(self):
+        """return number of items in seen db.
+        can take pretty long to return.
+        """
+        self.init_dispatcher()
+        if self.dispatcher.seen:
+            return self.dispatcher.seen._count()
+        else:
+            # TODO:
+            raise ValueError, 'seen db is not opened'
+
+    def clear_seen(self):
+        self.init_dispatcher()
+        self.dispatcher.clear_seen()
+
 class Headquarters(object):
     '''now just a collection of CrawlJobs'''
     def __init__(self):
@@ -446,14 +461,14 @@ class ClientAPI(QueryApp, DiscoveredHandler):
     def do_seencount(self, job):
         '''can take pretty long time'''
         try:
-            count = hq.get_job(job, nocreate=1).seen._count()
+            count = hq.get_job(job, nocreate=1).count_seen()
             return dict(success=1, seencount=count)
         except Exception as ex:
             return dict(success=0, err=str(ex))
 
     def do_clearseen(self, job):
         try:
-            hq.get_job(job, nocreate=1).seen.clear()
+            hq.get_job(job, nocreate=1).clear_seen()
             return dict(success=1)
         except Exception as ex:
             return dict(success=0, err=str(ex))

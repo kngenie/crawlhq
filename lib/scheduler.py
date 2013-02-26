@@ -67,7 +67,7 @@ class WorkSet(object):
             curi = self.deq.get(timeout=0.001)
             if curi is None:
                 # avoid flushing queue too frequently
-                if self.enq.queue_count > 10000:
+                if self.enq.queue_count > 10000 or self.enq.age() > 1.0:
                     self.enq.close()
                 break
             r.append(curi)
@@ -116,7 +116,8 @@ class ClientQueue(object):
                  lastfeedcount=self.lastfeed,
                  lastfeedtime=self.lastfeedtime,
                  next=self.next,
-                 worksetcount=len(self.worksets))
+                 worksetcount=len(self.worksets),
+                 isactive=self.is_active())
         worksets = []
         scheduledcount = 0
         activecount = 0

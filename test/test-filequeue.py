@@ -105,7 +105,10 @@ class FileQueueTestCase(unittest.TestCase):
         r = FileDequeue(DATADIR)
         for i in xrange(1024/16):
             d = r.get(timeout=0.01)
-            assert d == data[i], 'expected %s, got %s' % (data[i], d)
+            self.assertEquals(
+                d, data[i],
+                'expected %s, got %s (reading queue files in wrong order?)' %
+                (data[i], d))
             
 if __name__ == '__main__':
     unittest.main()

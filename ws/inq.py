@@ -46,12 +46,10 @@ class CrawlJob(object):
         self.enq.close()
 
 class Headquarters(object):
-    """mini Headquarters object with just one incomng queue"""
+    """mini Headquarters object with just one incoming queue"""
     def __init__(self):
         self.jobs = {}
         self.jobslock = threading.RLock()
-        #self.mongo = pymongo.Connection(hqconfig.get('mongo'))
-        #self.configdb = self.mongo.crawl
         self.jobconfigs = hqconfig.factory.jobconfigs() #JobConfigs(self.configdb)
         #self.coordinator = Coordinator(hqconfig.get('zkhosts'))
         self.maxinqueuesize = hqconfig.get(('inq', 'maxqueuesize'), 4)
@@ -60,8 +58,6 @@ class Headquarters(object):
         for job in self.jobs.values():
             job.shutdown()
         self.jobconfigs = None
-        #self.configdb = None
-        #self.mongo.disconnect()
 
     def get_job(self, jobname):
         with self.jobslock:

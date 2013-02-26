@@ -306,6 +306,10 @@ class Dispatcher(object):
         if not self.seen:
             self.seen = self.seenfactory(self.jobname)
 
+    def clear_seen(self):
+        self.init_seen()
+        self.seen.clear()
+
     def processinq(self, maxn):
         '''process incoming queue. maxn paramter adivces
         upper limit on number of URIs processed in this single call.

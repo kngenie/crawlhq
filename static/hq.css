@@ -1,8 +1,24 @@
+table {
+    border-collapse: collapse;
+}
+.jobtab {
+  background-color: #fcc;
+  padding: 4px;
+  -moz-border-radius: 4px;
+  border-radius: 4px;
+  -moz-box-shadow: 3px 3px 5px rgba(0,0,0,0.7);
+  box-shadow: 3px 3px 5px rgba(0,0,0,0.7);
+}
+.jobtab.on {
+  box-shadow: none;
+}
 .job {
+    border-radius: 5px;
     -webkit-border-radius: 5px;
     -moz-border-radius: 5px;
     background-color: #ddf;
     padding: 5px;
+    margin-bottom: 6px;
 }
 .jtitle {
     font-size: 120%;
@@ -13,7 +29,27 @@ h3 {
     font-weight: normal;
     margin-bottom: 2px;
 }
+td.n {
+    text-align: right;
+}
+.client.active {
+    background-color: #F7C7BF;
+}
+.client.inactive {
+    background-color: #869084;
+}
+.loading {
+    color: #666;
+}
 .wait {
     padding-right: 18px;
-    background: url(img/wait.gif) 100% 50% no-repeat;
+    background: transparent url(img/wait.gif) 100% 50% no-repeat;
 }
+.tsp {
+  color: #666;
+  font-size: 50%;
+}
+.job.closed .jobdetail {
+  display: none;
+}
+

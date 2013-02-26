@@ -7,6 +7,7 @@ import mmap
 import logging
 from cStringIO import StringIO
 from gzip import GzipFile
+from collections import deque
 
 EMPTY_PAUSE = 15.0
 
@@ -53,6 +54,8 @@ class FileEnqueue(object):
         self.executor = executor
         self.gzip = gzip
         self.__size = None
+
+        self.starttime = None
 
     WRITE_BUFSIZE = 50000
 
@@ -260,6 +263,9 @@ class FileEnqueue(object):
             self.__queuecount += len(curis)
 
     def age(self):
+        """time elapsed since when current qfile was opened, float
+        in seconds. if no qfile is open at the moment, returns -1.0"""
+        if self.starttime is None: return -1.0
         return time.time() - self.starttime
 
     def size(self):
@@ -300,23 +306,27 @@ class QueueFileWriter(object):
         """
         return self.__size
     def write(self, objs):
+        def write_json_lines(f, objs):
+            for s in objs:
+                f.write(' ')
+                f.write(json.dumps(s, separators=',:'))
+                f.write('\n')
+
         if self.f is None:
             self.open()
         b = StringIO()
-        for s in objs:
-            b.write(' ')
-            b.write(json.dumps(s, separators=',:'))
-            b.write('\n')
-        data = b.getvalue()
-        if self.gzip is not None:
-            z = GzipFile(fileobj=self.f, mode='wb')
-            z.write(data)
+        if isinstance(self.gzip, int):
+            z = GzipFile(fileobj=b, mode='wb', compresslevel=self.gzip)
+            write_json_lines(z, objs)
+            sz = z.tell()
             z.close()
-            # z.close() does not flush self.f
+            self.f.write(b.getvalue())
+            # for less chance of losing data b/c of crash
             self.f.flush()
-            self.__size += len(data)
+            self.__size += sz
         else:
-            self.f.write(data)
+            write_json_lines(b, objs)
+            self.f.write(b.getvalue())
             self.__size = self.f.tell()
 
 class QueueFileReader(object):
@@ -403,7 +413,7 @@ class FileDequeue(object):
         self.qdir = qdir
         # timestamp of the last qfile
         self.rqfile = None
-        self.rqfiles = []
+        self.rqfiles = deque()
         self.noupdate = noupdate
         self.reader = reader
 
@@ -437,7 +447,7 @@ class FileDequeue(object):
     def qfiles_available(self, qfiles):
         self.rqfiles.extend(qfiles)
 
-    def scan(self):
+    def scan(self, refreshall=False):
         '''scan qdir for new file'''
         logging.debug("scanning %s for new qfile", self.qdir)
         try:
@@ -448,6 +458,7 @@ class FileDequeue(object):
             else:
                 logging.error("listdir failed on %s", self.qdir, exc_info=1)
             return
+        if refreshall: self.rqfiles.clear()
         curset = set(self.rqfiles)
         new_rqfiles = []
         for f in ls:
@@ -457,8 +468,7 @@ class FileDequeue(object):
                 new_rqfiles.append(f)
         if new_rqfiles:
             logging.debug("found %d new queue file(s)", len(new_rqfiles))
-            new_rqfiles.sort()
-            self.qfiles_available(new_rqfiles)
+            self.qfiles_available(sorted(new_rqfiles))
         else:
             logging.debug("no new queue file was found")
 
@@ -471,7 +481,7 @@ class FileDequeue(object):
         pause = 0.0
         while 1:
             if self.rqfiles:
-                f = self.rqfiles.pop(0)
+                f = self.rqfiles.popleft()
                 if f.startswith('/'):
                     self.qfile = f
                 else:
@@ -578,10 +588,9 @@ class DummyFileDequeue(FileDequeue):
         return super(DummyFileDequeue, self).qfile_count()
 
     def scan(self):
-        """extended so that those files remove on the filesystem
+        """extended so that those files removed on the filesystem
         are dropped from self.rqfiles as well"""
-        self.rqfiles = []
-        super(DummyFileDequeue, self).scan()
+        super(DummyFileDequeue, self).scan(refreshall=True)
 
     def __update_rqfiles(self):
         try:
@@ -593,4 +602,3 @@ class DummyFileDequeue(FileDequeue):
 
     def get(self, *kwds):
         return None
-

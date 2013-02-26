@@ -150,6 +150,14 @@ CrawlJob.prototype = {
 	    var k = v.id;
 	    r = tbl.get(0).insertRow(-1);
 	    jQuery(r).addClass('client');
+	    if (v.isactive === true) {
+	      jQuery(r).addClass('active');
+	    } else if (v.isactive === false) {
+	      jQuery(r).addClass('inactive');
+	    }
+	    if (v.worksetcount === 0) {
+	      jQuery(r).addClass('has-problem');
+	    }
 	    jQuery(r.insertCell(-1)).text(k).attr({align:'right'});
 	    jQuery.each(['scheduledcount','feedcount','finishedcount','next','worksetcount','lastfeedcount','lastfeedtime','qfilecount'],
 		  function(i, p){

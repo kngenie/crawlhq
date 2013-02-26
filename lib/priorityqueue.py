@@ -136,8 +136,7 @@ class PriorityDequeue(object):
                 q.close()
 
     def qfile_count(self):
-        # TODO - return sum of all qfile_counts
-        return 0
+        return sum(q.qfile_count() for q in self.queues.values())
 
     def qfiles_available(self, qfiles):
         # TODO - priority 0 (the highest) would be appropriate for
