@@ -46,10 +46,22 @@ td.n {
     background: transparent url(img/wait.gif) 100% 50% no-repeat;
 }
 .tsp {
-  color: #666;
-  font-size: 50%;
+    color: #666;
+    font-size: 50%;
 }
 .job.closed .jobdetail {
-  display: none;
+    display: none;
 }
-
+.jobstatus fieldset {
+    border-color: #fff;
+    border-style: solid;
+    border-width: 2ex 2px 2px;
+    border-radius: 4px;
+    -webkit-border-radius: 4px;
+}
+.warning {
+    padding: 2px 1ex;
+    border-radius: 1ex;
+    background-color: #bbe;
+    color: #d7960a;
+}

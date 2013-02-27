@@ -1,8 +1,8 @@
 //
 //
 CrawlJob = function(el) {
+  el.obj = this;
   this.el = jQuery(el);
-  this.el.obj = this;
   this.name = this.el.attr('jobname');
   this.last_status = {};
 
@@ -77,17 +77,23 @@ CrawlJob.prototype = {
     var servers = resp.servers;
     var e = jQuery('.jobstatus', this.el);
     e.empty();
-    for (svid in servers) {
-      var server = servers[svid];
-      server.svid = svid;
-      var ee = jQuery('<fieldset>').attr({svid:svid, server:server.name})
+    var self = this;
+    jQuery.each(servers, function(i, server) {
+      if (typeof(server.svid)=='undefined'||server.svid==null) server.svid='-';
+      var ee = jQuery('<fieldset>').attr({svid:server.svid, server:server.name})
 	.appendTo(e);
-      ee.append(jQuery('<legend>').text(svid+':'+server.name));
-      this.render_status(ee, server);
-    }
+      ee.append(jQuery('<legend>').text(server.svid+':'+server.name));
+      self.render_status(ee, server);
+    });
   },
   render_status:function(d, resp) {
-    if (!resp.success) return;
+    if (!resp.success) {
+      if ('error' in resp) {
+	jQuery('<div>').append(
+	  jQuery('<span class="warning">').text(resp.error)).appendTo(d);
+      }
+      return;
+    }
     var data = resp.r;
     if ('workqueuesize' in data) {
       jQuery('<div>').text('WorkQueueSize: ' + data.workqueuesize).appendTo(d);
