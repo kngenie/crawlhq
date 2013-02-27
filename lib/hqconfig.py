@@ -62,17 +62,27 @@ def mergeconfig(config):
         raise ValueError, 'config must be a ConfigObj'
     configobj().merge(config)
 
-def get(p, dv=None):
+def get(p, dv=None, type=None):
     if isinstance(p, basestring):
-        return configobj().get(p, dv)
+        p = p.split('.')
     if isinstance(p, (list, tuple)):
         m = configobj()
         for e in p:
             if not hasattr(m, 'get'): return dv
             m = m.get(e)
             if m is None: return dv
+        if type:
+            try:
+                m = type(m)
+            except:
+                m = None
         return m
-    raise ValueError, 'bad key: %s' % p
+    raise KeyError, 'bad key: %s' % p
+
+def getint(p, dv=None):
+    return get(p, dv, type=int)
+def getfloat(p, dv=None):
+    return get(p, dv, type=float)
 
 import factory
 factory_script = os.path.join(confdir(), 'factory.py')
