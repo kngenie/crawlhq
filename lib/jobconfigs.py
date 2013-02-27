@@ -34,6 +34,13 @@ class JobConfig(object):
         return self.job.get('wscl')
 
 class JobConfigs(object):
+    def __init__(self, coordinator=None):
+        self.coordinator = coordinator
+        if self.coordinator:
+            self.coordinator.add_listener('jobschanged', self.__jobschanged)
+    def __jobschanged(self):
+        self.reload()
+
     def shutdown(self):
         pass
     def get_job(self, job):
@@ -42,4 +49,27 @@ class JobConfigs(object):
         pass
     def job_exists(self, job):
         pass
+    def create_job(self, name, nworksets=None, ncrawlers=None):
+        pass
+    def delete_job(self, name):
+        pass
+    def reaload(self):
+        """reload job configs from persistent storage if implementation
+        does some sort of caching.
+        """
+        pass
+    def add_job_server(self, job, server):
+        if not self.coordinator:
+            raise RuntimeError, 'coordinator is not available'
+        self.coordinator.add_job_server(job, server)
+
+    def delete_job_server(self, job, server):
+        if not self.coordinator:
+            raise RuntimeError, 'coordinator is not available'
+        j = self.coordinator.get_server_job(server, job)
+        if j['ts'] > time.time() - 24*3600:
+            # TODO define an exception type
+            raise RuntimeError, ('server %r is still active in job %r' % (
+                server, job))
+        self.coordinator.delete_job_server(job, server)
 

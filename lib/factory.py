@@ -34,7 +34,7 @@ def coordinator():
 @singleton
 def jobconfigs():
     from mongojobconfigs import JobConfigs
-    return JobConfigs(configdb())
+    return JobConfigs(configdb(), coordinator())
 
 @singleton
 def domaininfo():

@@ -1,16 +1,17 @@
 import sys
 import os
+import re
 import hqconfig
 import threading
 import json
 import logging
 import itertools
 import time
-
+from itertools import islice
 import pymongo
 
 from jobconfigs import JobConfig
-
+from jobconfigs import JobConfigs as BaseJobConfigs
 __all__ = ['JobConfigs']
 
 # TODO: move this to engine-independent module
@@ -21,8 +22,9 @@ class JobConfigJSONEncoder(json.JSONEncoder):
         else:
             return json.JSONEncoder.default(self, o)
 #
-class JobConfigs(object):
-    def __init__(self, db):
+class JobConfigs(BaseJobConfigs):
+    def __init__(self, db, coordinator=None):
+        super(JobConfigs, self).__init__(coordinator)
         self.db = db
         self.coll = self.db.jobconfs
         self.cachedir = hqconfig.cachedir()
@@ -147,7 +149,9 @@ class JobConfigs(object):
             jobname = jobdic['name']
             jobs[jobname] = j
             self._write_cache()
-            #self._savejob(jobname)
+            self._savejob(jobname)
+        if self.coordinator:
+            self.coordinator.publish_job(jobname)
 
     def get_alljobs(self):
         return self._get_jobs().values()
@@ -193,3 +197,23 @@ class JobConfigs(object):
                 logging.warn('failed to reload JobConfigs from MongoDB.'
                              ' continue to use existing data', exc_info=1)
                 return False
+
+    def create_job(self, name, nworksets=None, ncrawlers=None):
+        # TODO: move check code to common super-class.
+        if nworksets is None:
+            nworksets = 256 # TODO: where is this value stored?
+        else:
+            if not isinstance(nworksets, int) or nworksets < 1:
+                raise ValueError, 'nworksets must be an integer > 1'
+        if ncrawlers is None:
+            ncrawlers = 1
+        else:
+            if not isinstance(ncrawlers, int) or ncrawlers < 1:
+                raise ValueError, 'ncrawlers must be an inteer > 1'
+        # TODO: define this RE in a common module
+        if not re.match('[a-zA-Z][a-zA-Z0-9]+$', name):
+            raise ValueError, 'job name %r is invalid' % name
+        
+        wscl = list(islice(range(ncrawlers)), nworksets)
+        jobdic = dict(name=name, wscl=wscl)
+        self._add_job(jobdic)
