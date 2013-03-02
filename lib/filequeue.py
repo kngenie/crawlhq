@@ -205,7 +205,7 @@ class FileEnqueue(object):
                 z.write(data)
                 z.close()
                 self.file.flush()
-                self.__size += len(data)
+                self.__size = (self.__size or 0) + len(data)
             else:
                 self.file.write(data)
                 self.__size = self.file.tell()
