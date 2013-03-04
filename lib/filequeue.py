@@ -7,6 +7,7 @@ import mmap
 import logging
 from cStringIO import StringIO
 from gzip import GzipFile
+from collections import deque
 
 EMPTY_PAUSE = 15.0
 
@@ -53,6 +54,8 @@ class FileEnqueue(object):
         self.executor = executor
         self.gzip = gzip
         self.__size = None
+
+        self.starttime = None
 
     WRITE_BUFSIZE = 50000
 
@@ -344,13 +347,13 @@ class QueueFileReader(object):
 class FileDequeue(object):
     '''multi-queue file reader'''
     def __init__(self, qdir, noupdate=False,
-                 reader=QueueFileReader):
+                 reader=QueueFileReader, enq=None):
         '''reader should be a factory function for QueueFileReader-compatible
            object.'''
         self.qdir = qdir
         # timestamp of the last qfile
         self.rqfile = None
-        self.rqfiles = []
+        self.rqfiles = deque()
         self.noupdate = noupdate
         self.reader = reader
 
@@ -360,6 +363,8 @@ class FileDequeue(object):
         # for status reporting
         self.qfile = None
         self.qfilestep = None
+
+        self.enq = enq
 
     def get_status(self):
         r = dict(reader=(self.rqfile and hasattr(self.rqfile, 'get_status')
@@ -384,7 +389,7 @@ class FileDequeue(object):
     def qfiles_available(self, qfiles):
         self.rqfiles.extend(qfiles)
 
-    def scan(self):
+    def scan(self, refreshall=False):
         '''scan qdir for new file'''
         logging.debug("scanning %s for new qfile", self.qdir)
         try:
@@ -395,6 +400,7 @@ class FileDequeue(object):
             else:
                 logging.error("listdir failed on %s", self.qdir, exc_info=1)
             return
+        if refreshall: self.rqfiles.clear()
         curset = set(self.rqfiles)
         new_rqfiles = []
         for f in ls:
@@ -404,8 +410,7 @@ class FileDequeue(object):
                 new_rqfiles.append(f)
         if new_rqfiles:
             logging.debug("found %d new queue file(s)", len(new_rqfiles))
-            new_rqfiles.sort()
-            self.qfiles_available(new_rqfiles)
+            self.qfiles_available(sorted(new_rqfiles))
         else:
             logging.debug("no new queue file was found")
 
@@ -418,7 +423,7 @@ class FileDequeue(object):
         pause = 0.0
         while 1:
             if self.rqfiles:
-                f = self.rqfiles.pop(0)
+                f = self.rqfiles.popleft()
                 if f.startswith('/'):
                     self.qfile = f
                 else:
@@ -486,7 +491,7 @@ class FileDequeue(object):
 
                 self.rqfile.close()
                 if not self.noupdate:
-                    with timelog('unlink %s' % self.rqfile.fn, warn=0.01):
+                    with timelog('unlink %s' % self.rqfile.fn, warn=0.1):
                         try:
                             os.unlink(self.rqfile.fn)
                         except:
@@ -498,6 +503,23 @@ class FileDequeue(object):
             else:
                 if not self.next_rqfile(timeout):
                     return None
+
+    def pull(self):
+        """checks if there are qfiles ready for reading,
+        and closes enq if not. if enq is not set, this is
+        no-op.
+        """
+        if self.enq is None:
+            logging.warn('FileDequeue(%r):enq is None', self.qdir)
+            return False
+
+        qfc = self.qfile_count()
+        if qfc == 0:
+            logging.debug('%s starved, flushing enq', self.qdir)
+            return self.enq.close(blocking=False)
+        else:
+            logging.debug('%s qfile_count()=%r', self.qdir, qfc)
+            return False
 
 class DummyFileEnqueue(FileEnqueue):
     """class compatible with FileEnqueue, but has no actual 'enqueue'
@@ -516,28 +538,31 @@ class DummyFileDequeue(FileDequeue):
     """class compatible with FileDequeue, but has no actual 'dequeue'
     functionality. It's used for providing statistics.
     """
-    def __init__(self, qdir, **kwds):
+    def __init__(self, qdir, enq=None, **kwds):
         super(DummyFileDequeue, self).__init__(qdir)
         self.lastscan = 0
+        self.enq = enq
         
     def qfile_count(self):
         self.__update_rqfiles()
         return super(DummyFileDequeue, self).qfile_count()
 
     def scan(self):
-        """extended so that those files remove on the filesystem
+        """extended so that those files removed on the filesystem
         are dropped from self.rqfiles as well"""
-        self.rqfiles = []
-        super(DummyFileDequeue, self).scan()
+        super(DummyFileDequeue, self).scan(refreshall=True)
+        self.lastscan = time.time()
 
     def __update_rqfiles(self):
         try:
             mtime = os.stat(self.qdir).st_mtime
             if mtime > self.lastscan:
                 self.scan()
+        except OSError as ex:
+            if ex.errno != 2:
+                logging.warn('error:%s', ex)
         except Exception as ex:
             logging.warn('error:%s', ex)
 
     def get(self, *kwds):
-        return None
-
+        raise NotImplementedError

@@ -194,7 +194,7 @@ try:
             # but better-than-nothing solution until we implement
             # inter-process communication.
             if do_flush:
-                dispatcher.flush()
+                dispatcher.flush_clients()
                 do_flush = False
             logging.info("inq exhausted, sleeping for %ds",
                          options.exhaust_delay)
@@ -206,7 +206,12 @@ try:
                 if dispatcher.wait_available(1.0):
                     break
         else:
-            do_flush = (r.get('scheduled', 0) > 0)
+            # flush if clients are starved.
+            if scheduler.flush_starved():
+                logging.info("workset flushed")
+                do_flush = False
+            else:
+                do_flush = (r.get('scheduled', 0) > 0)
         if not repeat:
             break
 finally:

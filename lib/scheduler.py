@@ -7,7 +7,8 @@ import threading
 import random
 from Queue import Queue, Empty
 import traceback
-from filequeue import FileEnqueue, FileDequeue, DummyFileEnqueue
+from filequeue import FileEnqueue, FileDequeue
+from filequeue import DummyFileEnqueue, DummyFileDequeue
 import logging
 
 class WorkSet(object):
@@ -25,8 +26,7 @@ class WorkSet(object):
         if reading:
             self.deq = FileDequeue(self.qdir)
         else:
-            # dummy?
-            self.deq = None
+            self.deq = DummyFileDequeue(self.qdir, enq=self.enq)
 
         self.running = True
 
@@ -234,10 +234,7 @@ class Scheduler(object):
                          for wsid in xrange(self.NWORKSETS)]
 
     def flush(self):
-        r = []
-        for ws in self.worksets:
-            if ws.flush(): r.append(ws.wsid)
-        return r
+        return self.flush_clients()
 
     def shutdown(self):
         for ws in self.worksets:
@@ -312,8 +309,11 @@ class Scheduler(object):
         # actually this can be done without going through ClientQueues
         #for cl in self.clients.values():
         #    cl.flush_scheduled()
+        r = []
         for ws in self.worksets:
-            ws.flush()
+            if ws.flush():
+                r.append(ws.wsid)
+        return r
 
     def flush_workset(self, wsid):
         if 0 <= wsid < len(self.worksets):
@@ -321,3 +321,10 @@ class Scheduler(object):
         else:
             logging.debug('wsid out of range: %d', wsid)
                  
+    def flush_starved(self):
+        flushed = []
+        for ws in self.worksets:
+            if ws.deq:
+                if ws.deq.pull():
+                    flushed.append(ws.wsid)
+        return flushed

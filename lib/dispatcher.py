@@ -252,7 +252,7 @@ class Dispatcher(object):
 
     def flush(self):
         """flushes URIs buffered in workset objects"""
-        #return self.job.flush()
+        self.scheduler.flush()
         
     def is_client_active(self, clid):
         """is client clid active?"""
