@@ -6,6 +6,10 @@ import errno
 from filequeue import FileEnqueue, FileDequeue
 from collections import defaultdict
 
+import logging
+
+__all__ = ('PriorityEnqueue', 'PriorityDequeue')
+
 # TODO: priority method is HQ-specific.
 
 class PriorityEnqueue(object):
@@ -81,7 +85,7 @@ class PriorityDequeue(object):
     """FileDequeue compatible object for reading queues created by
     PriorityEnqueue.
     """
-    def __init__(self, qdir, **kwargs):
+    def __init__(self, qdir, enq=None, deqfactory=FileDequeue, **kwargs):
         self.queues = {}
         self.__queueslock = threading.RLock()
         self.qdir = qdir
@@ -91,10 +95,21 @@ class PriorityDequeue(object):
         self.__curdispensed = 0
         self.__dequeuecount = 0
 
+        self.enq = enq
+        self.deqfactory = deqfactory
+
     def _new_queue(self, n):
         qdir = os.path.join(self.qdir, str(n))
         # mkdirs not necessary - assumes qdir always exists
-        return FileDequeue(qdir=qdir, **self.__queueargs)
+        # if enq is given, wire up corresponding sub-enq to new sub-deq
+        if self.enq:
+            # sub-enq may not exist at this point. PriorityEnqueue does
+            # not create FileEnqueue instance until something's actually
+            # got queued to it.
+            enq = self.enq.queues.get(n)
+        else:
+            enq = None
+        return self.deqfactory(qdir=qdir, enq=enq, **self.__queueargs)
 
     def _update_queues(self):
         """check qdir and update the list of queues.
@@ -117,12 +132,8 @@ class PriorityDequeue(object):
         return modified
 
     def get_status(self):
-        queues = []
-        for n, q in self.queues.items():
-            s = q.get_status()
-            s['name'] = str(n)
-            queues.append(s)
-        queuefilecount = sum(q.get('queuefilecount', 0) for q in queues)
+        queues = [[n, q.get_status()] for n, q in self.queues.items()]
+        queuefilecount = sum(q[1].get('queuefilecount', 0) for q in queues)
         r = dict(queues=queues,
                  queuefilecount=queuefilecount,
                  dequeuecount=self.__dequeuecount,
@@ -186,3 +197,20 @@ class PriorityDequeue(object):
                     return u
             self.__curqueue = None
             return self._get_newqueue(timeout=timeout)
+
+    def pull(self):
+        if self.enq is None:
+            logging.warn('PriorityDequeue.pull: enq is None')
+            return
+        self._update_queues()
+        for n, q in self.queues.items():
+            # followup wiring
+            if q.enq is None:
+                q.enq = self.enq.queues.get(n)
+                if q.enq is None:
+                    # queue has not been created on the enq side.
+                    # i.e. no URI has been queued to it.
+                    logging.debug('%s/%s enq is None', self.qdir, n)
+                    continue
+                logging.debug('q.enq set to %s', q.enq)
+            q.pull()
