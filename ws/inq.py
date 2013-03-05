@@ -61,7 +61,7 @@ class CrawlJob(object):
         self.enq.close()
 
     def flush_starved(self):
-        logging.warn('job %r flush_starved()', self.name)
+        logging.debug('job %r flush_starved()', self.name)
         self.deq.pull()
 
 class Headquarters(object):

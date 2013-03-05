@@ -181,7 +181,7 @@ class ClientQueue(object):
     # ClientQueue.feed
     def feed(self, n):
         with self.__feedlock:
-            self._feed(n)
+            return self._feed(n)
 
     def _feed(self, n):
         self.lastfeedtime = time.time()
