@@ -220,7 +220,7 @@ class CrawlJob(object):
             t0 = time.time()
             self.hq.crawlinfo.update_crawlinfo(curis)
             t = time.time() - t0
-            if t / len(curis) > 0.5:
+            if t / len(curis) > 1.0:
                 logging.warn("SLOW update_crawlinfo: %s %.3fs/%d",
                              client, t, len(curis))
             self.hq.crawlinfo.mongo.end_request()
@@ -408,7 +408,7 @@ class ClientAPI(QueryApp, DiscoveredHandler):
         # uri, path, via, context and data
         r = hq.get_job(job).feed(name, count)
         t = time.time() - start
-        if t > 1.0 and len(r) > 0:
+        if t > 2.0 and len(r) > 0:
             logging.warn("slow feed %s:%s %s, %.4fs", job, name, len(r), t)
         else:
             logging.debug("feed %s %s:%s, %.4fs", job, name, len(r), t)
