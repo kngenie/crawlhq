@@ -102,6 +102,8 @@ class ClientQueue(object):
         ## mutex for self.spilling flag
         #self.spilllock = threading.RLock()
 
+        self.__feedlock = threading.RLock()
+
     def shutdown(self):
         pass
 
@@ -178,6 +180,10 @@ class ClientQueue(object):
 
     # ClientQueue.feed
     def feed(self, n):
+        with self.__feedlock:
+            self._feed(n)
+
+    def _feed(self, n):
         self.lastfeedtime = time.time()
         # n = 0 is used for keep-alive (client notifying it's active).
         if n == 0: return []
