@@ -80,7 +80,7 @@ class CrawlJob(object):
         self.jobname = name
         self.jobconfigs = jobconfigs
 
-opt = OptionParser(usage='%prog [OPTIONS] JOBNAME')
+opt = OptionParser(usage='%prog [OPTIONS] JOBNAME CLIENT-ID ...')
 opt.add_option('-n', action='store', dest='maxn', default=500, type='int',
                help='maximum number of URLs to process (advisory)')
 opt.add_option('-1', action='store_true', dest='justonce', default=False,
@@ -113,7 +113,10 @@ else:
 
 if len(args) < 1:
     opt.error('JOBNAME is missing')
-job, = args
+job = args[0]
+active_clids = args[1:]
+if len(active_clids) < 1:
+    opt.error('specify CLIENT-IDs to assume active')
 
 repeat = not options.justonce
 do_flush = False
@@ -123,6 +126,8 @@ jobconfigs = hqconfig.factory.jobconfigs()
 mapper = CrawlMapper(CrawlJob(job, jobconfigs), hqconfig.NWORKSETS_BITS)
 scheduler = Scheduler(hqconfig.worksetdir(job), mapper, reading=False)
 dispatcher = Dispatcher(domaininfo, job, mapper=mapper, scheduler=scheduler)
+# XXX needs clearner way to do this
+dispatcher.is_client_active = lambda clid: str(clid) in active_clids
 
 if hostport and tornado:
     # TODO
