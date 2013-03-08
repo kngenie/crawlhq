@@ -10,7 +10,6 @@ import time
 import traceback
 import logging
 import signal
-import pymongo
 try:
     import tornado.ioloop
     import tornado.web
@@ -18,8 +17,6 @@ except:
     tornado = None
 
 import hqconfig
-from mongojobconfigs import JobConfigs
-from mongodomaininfo import DomainInfo
 from dispatcher import Dispatcher, WorksetMapper
 from scheduler import Scheduler
 
@@ -121,9 +118,8 @@ job, = args
 repeat = not options.justonce
 do_flush = False
 
-mongo = pymongo.Connection(hqconfig.get('mongo'))
-domaininfo = DomainInfo(mongo.crawl)
-jobconfigs = JobConfigs(mongo.crawl)
+domaininfo = hqconfig.factory.domaininfo()
+jobconfigs = hqconfig.factory.jobconfigs()
 mapper = CrawlMapper(CrawlJob(job, jobconfigs), hqconfig.NWORKSETS_BITS)
 scheduler = Scheduler(hqconfig.worksetdir(job), mapper, reading=False)
 dispatcher = Dispatcher(domaininfo, job, mapper=mapper, scheduler=scheduler)
@@ -203,5 +199,4 @@ finally:
     dispatcher.shutdown()
     jobconfigs.shutdown()
     domaininfo.shutdown()
-    mongo.disconnect()
 
