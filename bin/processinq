@@ -39,27 +39,20 @@ class CrawlMapper(WorksetMapper):
         self.crawljob = crawljob
         self.jobconfigs = self.crawljob.jobconfigs
         self.job = self.crawljob.jobname
-        #self.nworksets = (1 << nworksets_bits)
         self.load_workset_assignment()
 
         self.client_last_active = {}
 
-    def create_default_workset_assignment(self):
-        num_nodes = self.jobconfigs.get_jobconf(self.job, 'nodes', 20)
-        return list(itertools.islice(
-                itertools.cycle(xrange(num_nodes)),
-                0, self.nworksets))
-        
     def load_workset_assignment(self):
         wscl = self.jobconfigs.get_jobconf(self.job, 'wscl')
         if wscl is None:
-            wscl = self.create_default_workset_assignment()
-            self.jobconfigs.save_jobconf(self.job, 'wscl', wscl)
-        if len(wscl) > self.nworksets:
-            wscl[self.nworksets:] = ()
-        elif len(wscl) < self.nworksets:
-            wscl.extend(itertools.repeat(None, self.nworksets-len(wscl)))
+            raise RuntimeError, 'workset-client map (wscl) is not set up'
+        if len(wscl) != self.nworksets:
+            raise RuntimeError, ('size of workset-client map (wscl) %d'
+                                 ' does not match workset size %d',
+                                 (len(wscl), self.nworksets))
         self.worksetclient = wscl
+        self.numclients = max(wscl) + 1
 
     def wsidforclient(self, clid):
         '''return list of workset ids for node name of nodes-node cluster'''
@@ -73,6 +66,17 @@ class CrawlMapper(WorksetMapper):
         when it is inactive."""
         for wsid in self.wsidforclient(clid):
             self.crawljob.workset_activating(wsid)
+
+    def clients(self, server):
+        """returns a list of client-IDs server serves in job."""
+        servers = coordinator.get_job_servers(self.job)
+        for sid, name in servers.iteritems():
+            if name == server:
+                # assuming sid is zero-based and all sid < number of servers:
+                clpsv = (self.numclients + len(servers) - 1) / len(servers)
+                clients = range(self.numclients)[sid * clpsv:(sid + 1) * clpsv]
+                return [str(n) for n in clients]
+        return []
 
 class CrawlJob(object):
     """just enough to satisfy CrawlMapper requirements"""
@@ -115,17 +119,22 @@ if len(args) < 1:
     opt.error('JOBNAME is missing')
 job = args[0]
 active_clids = args[1:]
-if len(active_clids) < 1:
-    opt.error('specify CLIENT-IDs to assume active')
 
 repeat = not options.justonce
 do_flush = False
 
 domaininfo = hqconfig.factory.domaininfo()
 jobconfigs = hqconfig.factory.jobconfigs()
+coordinator = hqconfig.factory.coordinator()
 mapper = CrawlMapper(CrawlJob(job, jobconfigs), hqconfig.NWORKSETS_BITS)
 scheduler = Scheduler(hqconfig.worksetdir(job), mapper, reading=False)
 dispatcher = Dispatcher(domaininfo, job, mapper=mapper, scheduler=scheduler)
+if len(active_clids) < 1:
+    active_clids = mapper.clients(os.uname()[1])
+    if not active_clids:
+        opt.error('cannot infer CLIENT-IDs. specify CLIENT-IDs manually')
+    print >>sys.stderr, "using default CLIENT-IDs:", \
+        ' '.join(map(str, active_clids))
 # XXX needs clearner way to do this
 dispatcher.is_client_active = lambda clid: str(clid) in active_clids
 
@@ -202,6 +211,6 @@ try:
             break
 finally:
     dispatcher.shutdown()
+    scheduler.shutdown()
     jobconfigs.shutdown()
     domaininfo.shutdown()
-
