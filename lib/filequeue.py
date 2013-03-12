@@ -571,14 +571,15 @@ class FileDequeue(object):
         """
         if self.enq is None:
             logging.warn('FileDequeue(%r):enq is None', self.qdir)
-            return
+            return False
 
         qfc = self.qfile_count()
         if qfc == 0:
             logging.debug('%s starved, flushing enq', self.qdir)
-            self.enq.close(blocking=False)
+            return self.enq.close(blocking=False)
         else:
             logging.debug('%s qfile_count()=%r', self.qdir, qfc)
+            return False
 
 class DummyFileEnqueue(FileEnqueue):
     """class compatible with FileEnqueue, but has no actual 'enqueue'
@@ -617,6 +618,9 @@ class DummyFileDequeue(FileDequeue):
             mtime = os.stat(self.qdir).st_mtime
             if mtime > self.lastscan:
                 self.scan()
+        except OSError as ex:
+            if ex.errno != 2:
+                logging.warn('error:%s', ex)
         except Exception as ex:
             logging.warn('error:%s', ex)
 
