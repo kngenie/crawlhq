@@ -75,7 +75,7 @@ def get(p, dv=None, type=None):
             try:
                 m = type(m)
             except:
-                m = None
+                m = dv
         return m
     raise KeyError, 'bad key: %s' % p
 
