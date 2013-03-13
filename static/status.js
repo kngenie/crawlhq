@@ -114,10 +114,15 @@ CrawlJob.prototype = {
 	dequeuecount = inq.dequeue.dequeuecount || 0;
 	qfile_text = 'qfile=' + (inq.dequeue.qfile || '(none)') + ', '
 	  + (inq.dequeue.qfilestep || '-');
+	queuefilecount = with_comma(inq.dequeue.queuefilecount);
       }
       var out_text = 'out=' + with_comma(dequeuecount);
-      var bf_text = 'buffered=' + with_comma(inq.bufferedcount || 0);
-      var nq_text = 'nqfiles=' + with_comma(inq.queuefilecount);
+      var bufferedcount = '-';
+      if (inq.enqueue) {
+	bufferedcount = with_comma(inq.enqueue.buffered);
+      }
+      var bf_text = 'buffered=' + bufferedcount;
+      var nq_text = 'nqfiles=' + queuefilecount;
       var now = (new Date()).getTime();
       var elapsed_ms = now - last_status_update;
       if (elapsed_ms < 3600000) {

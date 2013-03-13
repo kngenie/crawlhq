@@ -68,9 +68,12 @@ class IncomingQueue(object):
         #buffered = sum([enq.buffered_count for enq in self.qfiles])
         r = dict(addedcount=self.addedcount,
                  processedcount=self.processedcount,
-                 queuefilecount=self.deq and self.deq.qfile_count(),
+                 # use dequeue.queuefilecount
+                 #queuefilecount=self.deq and self.deq.qfile_count(),
                  dequeue=self.deq and self.deq.get_status(),
-                 bufferedcount=self.enq and dself.enq.buffered_count
+                 enqueue=self.enq and self.enq.get_status(),
+                 # use enqueue.buffered
+                 #bufferedcount=self.enq and self.enq.buffered_count
                  )
         if self.deq:
             r['queuefilecount'] = self.deq.qfile_count()

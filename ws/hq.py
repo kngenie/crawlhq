@@ -90,20 +90,29 @@ class CrawlJob(object):
         self.scheduler = Scheduler(hqconfig.worksetdir(self.jobname),
                                    self.mapper)
 
-        try:
-            readsorted = int(hqconfig.get(('inq', 'sort'), 1))
-        except:
-            readsorted = 1
+        readsorted = hqconfig.getint('inq.sort', 1)
         
-        self.eninq = PriorityEnqueue(
-            qdir=hqconfig.inqdir(self.jobname),
-            buffer=1000)
+        inqdir = hqconfig.inqdir(self.jobname)
+
+        def enqfactory(qdir, **kwargs):
+            return PriorityEnqueue(qdir, **kwargs)
+        def deqfactory(qdir, **kwargs):
+            if readsorted:
+                kwargs.update(reader=FPSortingQueueFileReader)
+            return PriorityDequeue(qdir, **kwargs)
+
+        self.inq = IncomingQueue(inqdir, enq=enqfactory, deq=deqfactory,
+                                 buffsize=1000)
+
+        # self.eninq = PriorityEnqueue(
+        #     qdir=hqconfig.inqdir(self.jobname),
+        #     buffer=1000)
         
-        deinqargs = {}
-        if readsorted:
-            deinqargs['reader'] = FPSortingQueueFileReader
-        self.deinq = PriorityDequeue(qdir=hqconfig.inqdir(self.jobname),
-                                     **deinqargs)
+        # deinqargs = {}
+        # if readsorted:
+        #     deinqargs['reader'] = FPSortingQueueFileReader
+        # self.deinq = PriorityDequeue(qdir=hqconfig.inqdir(self.jobname),
+        #                              **deinqargs)
 
         self._dispatcher_mode = hqconfig.get(
             ('jobs', self.jobname, 'dispatcher'), 'internal')
@@ -141,7 +150,7 @@ class CrawlJob(object):
                                      self.jobname,
                                      mapper=self.mapper,
                                      scheduler=self.scheduler,
-                                     inq=self.deinq)
+                                     inq=self.inq.deq)
         
     def shutdown_dispatcher(self):
         if not self.dispatcher: return
@@ -153,21 +162,15 @@ class CrawlJob(object):
         logging.info("shutting down scheduler")
         self.scheduler.shutdown()
         logging.info("closing incoming queues")
-        self.eninq._flush()
-        self.eninq.close()
+        self.inq.flush()
+        self.inq.close()
         self.shutdown_dispatcher()
         logging.info("done.")
 
     def get_status(self):
         r = dict(job=self.jobname, oid=id(self))
         r['sch'] = self.scheduler and self.scheduler.get_status()
-        r['inq'] = dict(
-            addedcount=self.addedcount,
-            processedcount=self.processedcount,
-            queuefilecount=self.deinq.qfile_count(),
-            dequeue=self.deinq and self.deinq.get_status(),
-            enqueue=self.eninq and self.eninq.get_status()
-            )
+        r['inq'] = self.inq.get_status()
         return r
 
     def get_workset_status(self):
@@ -191,11 +194,7 @@ class CrawlJob(object):
         return dict(processed=scheduled, scheduled=scheduled)
 
     def discovered(self, curis):
-        processed = 0
-        self.eninq.queue(curis)
-        self.addedcount += len(curis)
-        processed += len(curis)
-        return dict(processed=processed)
+        return self.inq.add(curis)
 
     def processinq(self, maxn):
         self.init_dispatcher()
@@ -229,7 +228,7 @@ class CrawlJob(object):
         if not r:
             # but do not flush too frequently.
             if self.addedcount > self.last_inq_count + 1000:
-                self.eninq.close()
+                self.inq.close()
                 self.last_inq_count = self.addedcount
         return r
 
@@ -249,7 +248,7 @@ class CrawlJob(object):
         return self.scheduler.reset(client)
 
     def flush(self):
-        self.eninq.close()
+        self.inq.close()
         return self.scheduler.flush_clients()
 
     def count_seen(self):
