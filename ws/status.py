@@ -13,6 +13,8 @@ import urllib2
 import atexit
 import logging
 
+__metaclass__ = type
+
 setup_problems = []
 try:
     import web
@@ -38,7 +40,8 @@ except Exception, ex:
 
 urls = (
     '/?', 'Status',
-    '/q/(.*)', 'Query'
+    '/q/(.*)', 'Query',
+    '/(.*)', 'Static'
     )
 app = web.application(urls, globals())
 
@@ -247,6 +250,18 @@ class Query:
         except Exception, ex:
             r = dict(p, success=0, error=str(ex))
         return json.dumps(r)
+        
+class Static:
+    """fallback static files handler. so as to make status page work
+    even without static files serving configuration at container level.
+    """
+    STATICDIR = os.path.abspath(os.path.join(os.path.dirname(__file__),
+                                             '../static'))
+    def GET(self, path):
+        apath = os.path.join(self.STATICDIR, path)
+        if not os.path.isfile(apath):
+            raise web.notfound(path)
+        return open(apath)
         
 if __name__ == '__main__':
     logging.basicConfig(filename='/tmp/status.log', level=logging.INFO)
