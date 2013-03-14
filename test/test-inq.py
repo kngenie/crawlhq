@@ -42,6 +42,19 @@ class InqTestCase(unittest.TestCase):
         assert data.get('processed') == 1, r
         assert type(data.get('t')) == float
 
+        """note inq retains state from previous test method."""
+        r = inq.app.request('/wide/status')
+        print r
+
+        assert r.status == '200 OK', r
+        assert r.headers['content-type'] == 'text/json'
+        data = json.loads(r.data)
+        assert data['job'] == 'wide'
+        assert data['ok'] == 1
+        assert data['r']
+        assert data['r'].get('deq')
+        assert data['r'].get('enq')
+
         # TODO: shutdown inq, check if incoming queues are properly
         # flushed.
 

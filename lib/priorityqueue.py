@@ -29,8 +29,10 @@ class PriorityEnqueue(object):
             executor=executor, gzip=gzip)
         
     def get_status(self):
+        queues=[(n, q.get_status()) for n, q in self.queues.items()]
         r = dict(
-            queues=[(n, q.get_status()) for n, q in self.queues.items()]
+            queues=queues,
+            buffered=sum(q[1]['buffered'] for q in queues)
             )
         return r
 
