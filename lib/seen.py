@@ -1,8 +1,10 @@
+import sys
 import os
 import re
 import threading
 from Queue import Queue, Empty, Full
 import logging
+import struct
 
 import urihash
 import leveldb
@@ -177,3 +179,21 @@ class Seen(object):
             self._open()
         finally:
             self.ready.set()
+
+    def dump(self, format='text', file=sys.stdout):
+        formatters = dict(
+            text=lambda k: struct.unpack('l', k)[0],
+            binary=lambda k: k
+            )
+        try:
+            formatter = formatters[format]
+        except KeyError:
+            raise ValueError, 'undefined format %r' % format
+
+        it = self.seendb.new_iterator()
+        it.seek_to_first()
+        while it.valid():
+            it.next()
+            if not it.valid(): break
+            print formatter(it.key())
+        del it

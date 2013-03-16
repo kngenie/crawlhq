@@ -2,24 +2,18 @@
 import sys, os
 LIBDIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../lib'))
 if LIBDIR not in sys.path: sys.path.append(LIBDIR)
-import leveldb
-import struct
+import seen
 import hqconfig
+from optparse import OptionParser
 
-if len(sys.argv) < 2:
-  print >>sys.stderr, "specify job name"
-  exit(1)
-job = sys.argv[1]
+opt = OptionParser('%prog [OPTIONS] JOBNAME')
+opt.add_option('--binary', action='store_const', const='binary',
+               dest='format', default='text')
+options, args = opt.parse_args()
+if len(args) < 1:
+  opt.error('specify job name')
 
-h = leveldb.IntHash(hqconfig.seendir(job))
-try:
-  it = h.new_iterator()
-  it.seek_to_first()
-  while it.valid():
-      it.next()
-      if not it.valid(): break
-      k, = struct.unpack('l', it.key())
-      print k
-  del it
-finally:
-  del h
+job = args[0]
+
+seendb = seen.SeenFactory()(job)
+seendb.dump(format=options.format)
