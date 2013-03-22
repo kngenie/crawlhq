@@ -182,6 +182,20 @@ class PriorityDequeue(object):
                     return u
         return None
         
+    def bulkreader(self):
+        if self.__curqueue is not None:
+            return self.queues[self.__curqueue].bulkreader()
+        with self.__queueslock:
+            prios = self.queues.keys()
+        if prios:
+            prios.sort()
+            for p in prios:
+                q = self.queues[p]
+                reader = q.bulkreader()
+                if reader:
+                    return reader
+        return None
+        
     def get(self, timeout=0.0):
         """read out URI in accordance with their priority.
         current algorithm sticks to the queue picked as long as

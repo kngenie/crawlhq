@@ -401,6 +401,8 @@ class QueueFileReader(object):
                 continue
         raise StopIteration
                              
+    def __iter__(self):
+        return self
     def next(self):
         return self.__next()
 
@@ -540,6 +542,23 @@ class FileDequeue(object):
                 pause = EMPTY_PAUSE
                 continue
                 
+    def bulkreader(self):
+        if not self.rqfile:
+            if not self.next_rqfile(timeout=0.01):
+                return None
+        def reader():
+            for curi in self.rqfile:
+                self.dequeuecount += 1
+                yield curi
+            if not self.noupdate:
+                try:
+                    os.unlink(self.rqfile.fn)
+                except:
+                    logging.warn("unlink failed on %s",
+                                 self.rqfile.fn, exc_info=1)
+            self.rqfile = None
+        return reader()
+
     def get(self, timeout=0.0):
         '''currently this method is not thread-safe'''
         while 1:
