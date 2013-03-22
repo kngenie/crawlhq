@@ -93,7 +93,7 @@ def dispatcher_leveldb(domaininfo, job, *args, **kwargs):
                              ' no longer the case' % mseendir)
         exit(1)
     from dispatcher import Dispatcher
-    return Dispatcher(*args, **kwargs)
+    return Dispatcher(domaininfo, job, *args, **kwargs)
 def dispatcher_merge(domaininfo, job, *args, **kwargs):
     # refuse to run if MergeDispatcher directory does not exist
     mseendir = os.path.join(hqconfig.inqdir(job))
@@ -103,7 +103,7 @@ def dispatcher_merge(domaininfo, job, *args, **kwargs):
                              % mseendir)
         exit(1)
     from mergedispatcher import MergeDispatcher
-    return MergeDispatcher(*args, **kwargs)
+    return MergeDispatcher(domaininfo, job, *args, **kwargs)
 
 DISPATCHER_CHOICES = {
     'leveldb': dispatcher_leveldb,
