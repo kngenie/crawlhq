@@ -34,9 +34,18 @@ class MergeDispatcher(Dispatcher):
         self.processedcount = 0
         # end
 
-        self.seendir = os.path.join(hqconfig.get('datadir'), 'mseen')
+        self.seendir = os.path.join(hqconfig.get('datadir'),
+                                    self.jobname, 'mseen')
         self.maxsize = maxsize
 
+    def shutdown(self):
+        # similarly
+        logging.info("shutting down diverter")
+        self.diverter.shutdown()
+        logging.info("shutting down excludedlist")
+        self.excludedlist.shutdown()
+        logging.info("done.")
+        
     def clear_seen(self):
         pass
 
@@ -67,7 +76,7 @@ class MergeDispatcher(Dispatcher):
                         continue
                     di = self.domaininfo.get_byurl(o['u'])
                     if di and di['exclude']:
-                        self.excludelist.add(o)
+                        self.excludedlist.add(o)
                         result['excluded'] += 1
                         continue
                     urikey = urihash.urikey(o['u'])
