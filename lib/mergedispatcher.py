@@ -51,7 +51,8 @@ class MergeDispatcher(Dispatcher):
 
     def processinq(self, maxn):
         """maxn is unused."""
-        result = dict(processed=0, excluded=0, saved=0, scheduled=0)
+        result = dict(processed=0, excluded=0, saved=0, scheduled=0,
+                      td=0.0, ts=0.0)
         deq = self.inq.deq
         # TODO: resuming on crash
         incomingfile = os.path.join(self.seendir, 'INCOMING')
