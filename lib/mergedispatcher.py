@@ -108,33 +108,50 @@ class MergeDispatcher(Dispatcher):
                 seenkey = None
             else:
                 seenkey = struct.unpack('l', seenrec)[0]
+            lastkeywritten = None
             with open(seenfile+'.new', 'wb') as sw:
                 while idxin < len(index):
                     newrec = index[idxin]
                     if seenkey is None or newrec[0] < seenkey:
                         # newrec is not seen
                         sw.write(struct.pack('l', newrec[0]))
+                        lastkeywritten = newrec[0]
                         idxin += 1
                     elif newrec[0] == seenkey:
                         # newrec is seen
                         newrec[1] = None
                         idxin += 1
-                    if newrec[0] >= seenkey:
+                    if newrec[0] > seenkey:
                         # skip seenrec (copy to SEEN.new)
-                        sw.write(seenrec)
+                        if seenkey > lastkeywritten:
+                            sw.write(seenrec)
+                            lastkeywritten = seenkey
                         seenrec = sr.read(8)
                         if seenrec == '':
+                            seenkey = None
+                        elif len(seenrec) < 8:
+                            logging.warn('invalid seenrec of length %d' %
+                                         len(seenrec))
+                            seenrec = ''
                             seenkey = None
                         else:
                             seenkey = struct.unpack('l', seenrec)[0]
                 # copy remaining seenrec's to SEEN.new
                 if seenkey is not None:
-                    sw.write(seenrec)
-                    seenkey = None
-                    while 1:
-                        seenrec = sr.read(4096)
-                        if seenrec == '': break
+                    if seenkey > lastkeywritten:
                         sw.write(seenrec)
+                        lastkeywritten = seenkey
+                    while 1:
+                        seenrec = sr.read(8)
+                        if seenrec == '': break
+                        if len(seenrec) < 8:
+                            logging.warn('invalid seenrec of length %d' %
+                                         len(seenrec))
+                            break;
+                        seenkey = struct.unpack('l', seenrec)[0]
+                        if seenkey > lastkeywritten:
+                            sw.write(seenrec)
+                            lastkeywritten = seenkey
         fd = os.open(incomingfile, os.O_RDONLY)
         map = mmap.mmap(fd, 0, access=mmap.ACCESS_READ)
         os.close(fd)

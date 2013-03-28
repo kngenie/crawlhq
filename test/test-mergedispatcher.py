@@ -54,6 +54,7 @@ class MergeDispatcherTestCase(unittest.TestCase):
         with open(seenfile, 'w') as sw:
             for url in urls:
                 sw.write(struct.pack('l', url['id']))
+        return seenfile
 
     def generate_random_urls(self, n):
         TLDS = ['com', 'net', 'org', 'gov', 'edu', 'biz',
@@ -74,7 +75,7 @@ class MergeDispatcherTestCase(unittest.TestCase):
 
         seenurls = urls[:50]
         novelurls = urls[50:]
-        self.create_seen(seenurls)
+        seenfile = self.create_seen(seenurls)
 
         print "processinq #1"
 
@@ -106,6 +107,43 @@ class MergeDispatcherTestCase(unittest.TestCase):
         assert result['scheduled'] == 0, result
 
         assert len(self.scheduler.curis) == 0
+
+        self.check_seenfile(seenfile)
+
+    def testSameURLsInInput(self):
+        urls = self.generate_random_urls(100)
+        seenurls = urls[:50]
+        novelurls = urls[50:]
+        seenfile = self.create_seen(seenurls)
+
+        dupseenurls = [dict(url) for url in seenurls[:25]]
+
+        input = urls + dupseenurls
+        self.inq.add(input)
+        self.inq.close()
+
+        result = self.dispatcher.processinq(0)
         
+        assert result['processed'] == len(input), result
+        assert result['excluded'] == 0, result
+        assert result['saved'] == 0, result
+        assert result['scheduled'] == len(novelurls), result
+
+        self.check_seenfile(seenfile)
+
+    def check_seenfile(self, seenfile):
+        # check if SEEN file is error free
+        print >>sys.stderr, "checking SEEN file integrity"
+        with open(seenfile, 'r') as f:
+            lastuid = None
+            while 1:
+                rec = f.read(8)
+                if rec == '': break
+                assert len(rec) == 8
+                uid = struct.unpack('l', rec)
+                if lastuid is not None:
+                    assert lastuid < uid
+                lastuid = uid
+
 if __name__ == '__main__':
     unittest.main()
