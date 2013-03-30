@@ -49,16 +49,25 @@ class MergeDispatcher(Dispatcher):
     def clear_seen(self):
         pass
 
-    def processinq(self, maxn):
-        """maxn is unused."""
-        result = dict(processed=0, excluded=0, saved=0, scheduled=0,
-                      td=0.0, ts=0.0)
+    def _rebuild_index(self, incomingfile, result):
+        index = []
+        with open(incomingfile, 'r') as f:
+            while 1:
+                pos = f.tell()
+                line = f.readline()
+                if not line: break
+                try:
+                    o = json.loads(line.strip())
+                    urikey = urihash.urikey(o['u'])
+                except:
+                    continue
+                index.append([urikey, pos])
+                result['processed'] += 1
+                self.processedcount += 1
+        return index
+
+    def _build_incoming(self, incomingfile, result):
         deq = self.inq.deq
-        # TODO: resuming on crash
-        incomingfile = os.path.join(self.seendir, 'INCOMING')
-        if os.path.isfile(incomingfile):
-            raise RuntimeError, (
-                'refusing to clobber existing %s' % incomingfile)
         index = []
         with open(incomingfile, 'w') as w:
             size = 0
@@ -89,16 +98,45 @@ class MergeDispatcher(Dispatcher):
                 size = w.tell()
                 if size >= self.maxsize:
                     break
-        if len(index) == 0:
-            # nothing written
-            os.remove(incomingfile)
-            return result
-        index.sort(lambda x,y: cmp(x[0], y[0]))
-        
+        return index
+
+    def processinq(self, maxn):
+        """maxn is unused."""
+        result = dict(processed=0, excluded=0, saved=0, scheduled=0,
+                      td=0.0, ts=0.0)
+
         seenfile = os.path.join(self.seendir, 'SEEN')
+        # if SEEN.new exists, we need to reconstruct SEEN by combining
+        # SEEN and SEEN.new. As this can be a time-consuming process,
+        # we notify the problem by throwing an exception.
+        if os.path.exists(seenfile+'.new'):
+            if os.path.exists(seenfile):
+                raise RuntimeException, ('%s.new exists. SEEN needs to be '
+                                         'reconstructed with mseenrepair tool'
+                                         % (seenfile,))
+            # there's no SEEN file - we can simply mv SEEN.new to SEEN
+            os.rename(seenfile+'.new', seenfile)
+        # if SEEN does not exist, create an empty file.
         if not os.path.isfile(seenfile):
             with open(seenfile, 'wb'):
                 pass
+
+        # reprocess INCOMING if exists.
+        incomingfile = os.path.join(self.seendir, 'INCOMING')
+        if os.path.isfile(incomingfile):
+            logging.warn('reprocessing %s', incomingfile)
+            index = self._rebuild_index(incomingfile, result)
+        else:
+            index = self._build_incoming(incomingfile, result)
+
+        if len(index) == 0:
+            # nothing written
+            try:
+                os.remove(incomingfile)
+            except OSError, ex:
+                logging.warn('failed to delete file %r (%s)', incomingfile, ex)
+            return result
+        index.sort(lambda x,y: cmp(x[0], y[0]))
         
         idxin = 0
         seenrec = None
@@ -152,6 +190,11 @@ class MergeDispatcher(Dispatcher):
                         if seenkey > lastkeywritten:
                             sw.write(seenrec)
                             lastkeywritten = seenkey
+        # TODO: possible data loss - if process is killed while we bulk
+        # schedule "unseen" URLs here, remaining URLs will be rejected
+        # as "seen" in reprocessing (because they are marked "seen" in
+        # SEEN.new). We need to either schedule URLs in the seen check
+        # loop above, or mark URLs "scheduled" here.
         fd = os.open(incomingfile, os.O_RDONLY)
         map = mmap.mmap(fd, 0, access=mmap.ACCESS_READ)
         os.close(fd)
