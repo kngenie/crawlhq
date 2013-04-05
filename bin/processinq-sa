@@ -17,7 +17,7 @@ except:
     tornado = None
 
 import hqconfig
-from dispatcher import Dispatcher, WorksetMapper
+from dispatcher import WorksetMapper
 from scheduler import Scheduler
 
 DEFAULT_BINDADDR = ('127.0.0.1', 8819)
@@ -84,6 +84,32 @@ class CrawlJob(object):
         self.jobname = name
         self.jobconfigs = jobconfigs
 
+def dispatcher_leveldb(domaininfo, job, *args, **kwargs):
+    # refuse to run if MergeDispatcher files exist
+    mseendir = os.path.join(hqconfig.inqdir(job))
+    if os.path.isdir(mseendir):
+        print >>sys.stderr, ('found directory %r, which suggests "merge"'
+                             ' dispatcher is in use. remove it if that is'
+                             ' no longer the case' % mseendir)
+        exit(1)
+    from dispatcher import Dispatcher
+    return Dispatcher(*args, **kwargs)
+def dispatcher_merge(domaininfo, job, *args, **kwargs):
+    # refuse to run if MergeDispatcher directory does not exist
+    mseendir = os.path.join(hqconfig.inqdir(job))
+    if not os.path.isdir(mseendir):
+        print >>sys.stderr, ('directory %r does not exist. create it and'
+                             ' put SEEN file with initial seen list.'
+                             % mseendir)
+        exit(1)
+    from mergedispatcher import MergeDispatcher
+    return MergeDispatcher(*args, **kwargs)
+
+DISPATCHER_CHOICES = {
+    'leveldb': dispatcher_leveldb,
+    'merge': dispatcher_merge
+}
+
 opt = OptionParser(usage='%prog [OPTIONS] JOBNAME CLIENT-ID ...')
 opt.add_option('-n', action='store', dest='maxn', default=500, type='int',
                help='maximum number of URLs to process (advisory)')
@@ -100,6 +126,9 @@ opt.add_option('-L', action='store', dest='listen',
                'specify "none" to disable HTTP API')
 opt.add_option('-v', action='store_true', dest='verbose', default=False,
                help='print out extra information')
+opt.add_option('-D', '--dispatcher', dest='dispatcher', type='choice',
+               choices=DISPATCHER_CHOICES.keys(), default='leveldb',
+               help='type of dispatcher to use')
 options, args = opt.parse_args()
 
 logging.basicConfig(level=(logging.DEBUG if options.verbose else logging.INFO),
@@ -128,7 +157,9 @@ jobconfigs = hqconfig.factory.jobconfigs()
 coordinator = hqconfig.factory.coordinator()
 mapper = CrawlMapper(CrawlJob(job, jobconfigs), hqconfig.NWORKSETS_BITS)
 scheduler = Scheduler(hqconfig.worksetdir(job), mapper, reading=False)
-dispatcher = Dispatcher(domaininfo, job, mapper=mapper, scheduler=scheduler)
+dispatcher_type = DISPATCHER_CHOICES[options.dispatcher]
+dispatcher = dispatcher_type(domaininfo, job, mapper=mapper,
+                             scheduler=scheduler)
 if len(active_clids) < 1:
     active_clids = mapper.clients(os.uname()[1])
     if not active_clids:
