@@ -223,11 +223,8 @@ class MergeDispatcher(Dispatcher):
 
         return result
 
-        
-                        
-                        
-                        
-        
-        
-        
-        
+    def wait_available(self, timeout=10.0):
+        # TODO:
+        time.sleep(timeout)
+        return True
+
