@@ -20,7 +20,7 @@ class WorkSet(object):
 
         if writing:
             FileEnqueue.recover(self.qdir)
-            self.enq = FileEnqueue(self.qdir, buffer=200)
+            self.enq = FileEnqueue(self.qdir, buffer=200, gzip=None)
         else:
             self.enq = DummyFileEnqueue(self.qdir)
         if reading:
