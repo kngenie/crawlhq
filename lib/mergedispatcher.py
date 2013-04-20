@@ -152,8 +152,16 @@ class MergeDispatcher(Dispatcher):
                     newrec = index[idxin]
                     if seenkey is None or newrec[0] < seenkey:
                         # newrec is not seen
-                        sw.write(struct.pack('l', newrec[0]))
-                        lastkeywritten = newrec[0]
+                        if newrec[0] > lastkeywritten:
+                            sw.write(struct.pack('l', newrec[0]))
+                            lastkeywritten = newrec[0]
+                        else:
+                            # this happens when INCOMING has more than one
+                            # instances of a URL (they should be adjacent)
+                            # second and later instances must be dropped as
+                            # seen. Note out-of-order URLs also falls here -
+                            # it is an serious problem to be reported (TODO).
+                            newrec[1] = None
                         idxin += 1
                     elif newrec[0] == seenkey:
                         # newrec is seen
@@ -161,6 +169,7 @@ class MergeDispatcher(Dispatcher):
                         idxin += 1
                     if newrec[0] > seenkey:
                         # skip seenrec (copy to SEEN.new)
+                        # drop duplicate items in SEEN
                         if seenkey > lastkeywritten:
                             sw.write(seenrec)
                             lastkeywritten = seenkey

@@ -110,13 +110,34 @@ class MergeDispatcherTestCase(unittest.TestCase):
 
         self.check_seenfile(seenfile)
 
-    def testSameURLsInInput(self):
+    def testSameSeenURLsInInput(self):
         urls = self.generate_random_urls(100)
         seenurls = urls[:50]
         novelurls = urls[50:]
         seenfile = self.create_seen(seenurls)
 
         dupseenurls = [dict(url) for url in seenurls[:25]]
+
+        input = urls + dupseenurls
+        self.inq.add(input)
+        self.inq.close()
+
+        result = self.dispatcher.processinq(0)
+        
+        assert result['processed'] == len(input), result
+        assert result['excluded'] == 0, result
+        assert result['saved'] == 0, result
+        assert result['scheduled'] == len(novelurls), result
+
+        self.check_seenfile(seenfile)
+
+    def testSameUnseenURLsInInput(self):
+        urls = self.generate_random_urls(100)
+        seenurls = urls[:50]
+        novelurls = urls[50:]
+        seenfile = self.create_seen(seenurls)
+
+        dupseenurls = [dict(url) for url in novelurls[:25]]
 
         input = urls + dupseenurls
         self.inq.add(input)
