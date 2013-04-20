@@ -19,6 +19,8 @@ except:
 import hqconfig
 from dispatcher import WorksetMapper
 from scheduler import Scheduler
+from fileinq import IncomingQueue
+from priorityqueue import PriorityDequeue
 
 DEFAULT_BINDADDR = ('127.0.0.1', 8819)
 
@@ -86,7 +88,7 @@ class CrawlJob(object):
 
 def dispatcher_leveldb(domaininfo, job, *args, **kwargs):
     # refuse to run if MergeDispatcher files exist
-    mseendir = os.path.join(hqconfig.inqdir(job))
+    mseendir = os.path.join(hqconfig.get('datadir'), job, 'mseen')
     if os.path.isdir(mseendir):
         print >>sys.stderr, ('found directory %r, which suggests "merge"'
                              ' dispatcher is in use. remove it if that is'
@@ -96,7 +98,7 @@ def dispatcher_leveldb(domaininfo, job, *args, **kwargs):
     return Dispatcher(domaininfo, job, *args, **kwargs)
 def dispatcher_merge(domaininfo, job, *args, **kwargs):
     # refuse to run if MergeDispatcher directory does not exist
-    mseendir = os.path.join(hqconfig.inqdir(job))
+    mseendir = os.path.join(hqconfig.get('datadir'), job, 'mseen')
     if not os.path.isdir(mseendir):
         print >>sys.stderr, ('directory %r does not exist. create it and'
                              ' put SEEN file with initial seen list.'
@@ -157,9 +159,10 @@ jobconfigs = hqconfig.factory.jobconfigs()
 coordinator = hqconfig.factory.coordinator()
 mapper = CrawlMapper(CrawlJob(job, jobconfigs), hqconfig.NWORKSETS_BITS)
 scheduler = Scheduler(hqconfig.worksetdir(job), mapper, reading=False)
+inqueue = IncomingQueue(hqconfig.inqdir(job), deq=PriorityDequeue)
 dispatcher_type = DISPATCHER_CHOICES[options.dispatcher]
 dispatcher = dispatcher_type(domaininfo, job, mapper=mapper,
-                             scheduler=scheduler)
+                             scheduler=scheduler, inq=inqueue)
 if len(active_clids) < 1:
     active_clids = mapper.clients(os.uname()[1])
     if not active_clids:
@@ -216,8 +219,8 @@ try:
         r['t'] = time.time() - start
         r['job'] = job
         r.update(
-            ps=r.get('processed', 0)/r['t'],
-            eps=r.get('scheduled', 0)/r['t']
+            ps=r.get('processed', 0)/r['t'] if r['t'] != 0 else 0,
+            eps=r.get('scheduled', 0)/r['t'] if r['t'] != 0 else 0
             )
         print >>sys.stderr, "%(job)s %(scheduled)d/%(processed)d X:%(excluded)d T:%(t).3f(D%(td).3f,S%(ts).3f) %(eps)8.2f/%(ps)8.2f/s" % r
         if not r.get('processed'):
@@ -225,7 +228,7 @@ try:
             # but better-than-nothing solution until we implement
             # inter-process communication.
             if do_flush:
-                dispatcher.flush_clients()
+                dispatcher.flush_worksets()
                 do_flush = False
             logging.info("inq exhausted, sleeping for %ds",
                          options.exhaust_delay)

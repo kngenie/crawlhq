@@ -255,8 +255,9 @@ class Dispatcher(object):
 
     def flush(self):
         """flushes URIs buffered in workset objects"""
-        self.scheduler.flush()
-        
+        self.scheduler.flush_clients()
+    flush_worksets = flush
+
     def get_status(self):
         r = dict(
             processedcount=self.processedcount
