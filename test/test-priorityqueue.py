@@ -131,5 +131,25 @@ class PriorityQueueTestCase(unittest.TestCase):
         s = q.get_status()
         assert s, "get_status returned %r" % s
 
+    def testBulkreader(self):
+        q = PriorityEnqueue(DATADIR)
+        q.queue([dict(id=i, p='L', expected=3) for i in xrange(2000)])
+        q.close()
+        # count how many files it created
+        fns = os.listdir(os.path.join(DATADIR, '3'))
+        nfiles = len(fns)
+
+        dq = PriorityDequeue(DATADIR)
+        count = 0
+        while nfiles > 0:
+            reader = dq.bulkreader()
+            assert reader is not None
+            for curi in reader:
+                count += 1
+            nfiles -= 1
+        assert count == 2000
+        reader = dq.bulkreader()
+        assert reader is None
+        
 if __name__ == '__main__':
     unittest.main()

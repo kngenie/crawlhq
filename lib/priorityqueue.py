@@ -186,6 +186,7 @@ class PriorityDequeue(object):
         if self.__curqueue is not None:
             return self.queues[self.__curqueue].bulkreader()
         with self.__queueslock:
+            self._update_queues()
             prios = self.queues.keys()
         if prios:
             prios.sort()
