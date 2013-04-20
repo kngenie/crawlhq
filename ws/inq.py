@@ -38,6 +38,8 @@ class CrawlJob(object):
         self.deq = PriorityDequeue(qdir=qdir, enq=self.enq,
                                    deqfactory=DummyFileDequeue)
 
+        self.lastflush = None
+
     @property
     def name(self):
         return self.jobconfig.name
@@ -45,7 +47,8 @@ class CrawlJob(object):
     def get_status(self):
         r = dict(
             enq=self.enq.get_status(),
-            deq=self.deq.get_status()
+            deq=self.deq.get_status(),
+            lastflush=self.lastflush
             )
         return r
 
@@ -62,7 +65,11 @@ class CrawlJob(object):
 
     def flush_starved(self):
         logging.debug('job %r flush_starved()', self.name)
-        self.deq.pull()
+        r = self.deq.pull()
+        self.lastflush = dict(
+            ts=time.time(),
+            status=r
+            )
 
 class Headquarters(object):
     """mini Headquarters object with just one incoming queue"""

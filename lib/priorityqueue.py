@@ -66,9 +66,12 @@ class PriorityEnqueue(object):
             q._flush()
 
     def close(self, blocking=True):
+        closed=False
         for q in self.queues.values():
             q._flush()
-            q.close(blocking=blocking)
+            if q.close(blocking=blocking):
+                closed=True
+        return closed
     
     def priority(self, curi):
         path = curi.get('p')
