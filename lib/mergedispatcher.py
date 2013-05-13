@@ -111,9 +111,9 @@ class MergeDispatcher(Dispatcher):
         # we notify the problem by throwing an exception.
         if os.path.exists(seenfile+'.new'):
             if os.path.exists(seenfile):
-                raise RuntimeException, ('%s.new exists. SEEN needs to be '
-                                         'reconstructed with mseenrepair tool'
-                                         % (seenfile,))
+                raise RuntimeError, ('%s.new exists. SEEN needs to be '
+                                     'reconstructed with mseenrepair tool'
+                                     % (seenfile,))
             # there's no SEEN file - we can simply mv SEEN.new to SEEN
             os.rename(seenfile+'.new', seenfile)
         # if SEEN does not exist, create an empty file.
