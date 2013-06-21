@@ -186,7 +186,7 @@ def report(st, start):
     submitcount = st[0] - st[1]
     print st
     print '  {0} ({1} dropped, {2} failed) in {4:.1f}s'.format(*(st + (elapsed,)))
-    if submitcount > 0:
+    if submitcount > 0 and elapsed > 0:
         print '  %.2f URI/s' % (submitcount / elapsed)
     if len(st[3]) > 0:
         print '  ignored schemes:'
