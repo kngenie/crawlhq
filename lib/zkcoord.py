@@ -110,9 +110,9 @@ class Coordinator(object):
 
     def __servers_watcher(self, zh, evtype, state, path):
         try:
-            logging.info('servers added/removed:%s', str(ch))
             ch = zk.get_children(self.zh, self.NODE_SERVERS,
                                  self.__servers_watcher)
+            logging.info('servers added/removed:%s', str(ch))
             self.fire_event('serverschanged')
         except zk.ZooKeeperException:
             logging.warn('zk.get_children(%r) failed', self.NODE_SERVERS,
