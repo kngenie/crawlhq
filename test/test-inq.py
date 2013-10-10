@@ -58,5 +58,13 @@ class InqTestCase(unittest.TestCase):
         # TODO: shutdown inq, check if incoming queues are properly
         # flushed.
 
+    def testDiscoveredNonexistentJob(self):
+        data = [dict(u='http://archive.org/', p='L', x='a/@href',
+                     v='http://www.archive.org/')]
+        r = inq.app.request('/nonexistent-job/mdiscovered', method='POST',
+                            data=json.dumps(data))
+        assert r.status == '404 Not Found', r
+        
+
 if __name__ == '__main__':
     unittest.main()

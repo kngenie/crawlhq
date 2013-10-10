@@ -28,8 +28,7 @@ class DiscoveredHandler(object):
         try:
             cj = self.hq.get_job(job)
         except Exception as ex:
-            # TODO: return 404?
-            return dict(err=str(ex))
+            raise web.notfound(json.dumps(dict(err=str(ex))))
 
         if p.force:
             return cj.schedule([furi])
@@ -66,7 +65,7 @@ class DiscoveredHandler(object):
         except Exception as ex:
             logging.exception('get_job(%r) failed', job)
             result['error'] = str(ex)
-            return result
+            raise web.notfound(json.dumps(result))
 
         start = time.time()
         if force:

@@ -2,9 +2,12 @@ import hqconfig
 from jobconfigs import JobConfig
 
 class TestJobConfigs(object):
+    JOBS = ('wide',)
     def shutdown(self):
         pass
     def get_job(self, job):
+        if job not in self.JOBS:
+            raise Exception('{}: no such job'.format(job))
         return JobConfig(self, dict(name=job))
     def get_jobconf(self, job, pname, default=None, nocreate=0):
         return default
