@@ -1,8 +1,8 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 #
 import sys
 import os
-import testhelper
+from fixture import *
 import unittest
 import json
 import subprocess
@@ -10,13 +10,11 @@ from urllib import urlencode
 import time
 import logging
 
-DATADIR = '/tmp/hq'
-datadir = testhelper.TestDatadir(DATADIR)
-
 import hqconfig
-import testjobconfigs
-import testseen
+from fixture.testjobconfigs import *
+from fixture.testseen import *
 import localcoord
+
 class TestDomainInfo(object):
     def __init__(self):
         pass
@@ -34,15 +32,26 @@ import hq
 # we want to see plain stack trace rather than HTML error page.
 hq.web.config.debug = False
 
-
 class HQTestCase(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.datadir = TestDatadir()
+        cls.logger = logging.getLogger('HQTestCase')
+    @classmethod
+    def tearDownClass(cls):
+        # let Headquarter flush queues etc.
+        hq.hq = None
+        time.sleep(3.0)
+        path = cls.datadir.path
+        cls.datadir = None
+        #subprocess.check_call('/bin/ls -R /tmp/hq', shell=1)
+        assert not os.path.exists(path)
+
     def setUp(self):
-        # clean up data dir
-        print >>sys.stderr, "removing %s/*..." % DATADIR
-        subprocess.check_call('/bin/rm -rf %s/*' % DATADIR, shell=1)
+        self.datadir.cleanup()
 
     def testDiscoveredAndProcessinq(self):
-        print >>sys.stderr, "testDiscoveredAndProcessinq..."
+        self.logger.info('testDiscoveredAndProcessinq')
         # put several CURLs into inq
         data = [dict(u='http://archive.org/%s' % n,
                      p='L',
@@ -76,7 +85,7 @@ class HQTestCase(unittest.TestCase):
         assert type(result.get('td')) == float, result
         assert type(result.get('ts')) == float, result
                            
-        print >>sys.stderr, "testDiscovered..."
+        self.logger.info('testDiscovered')
         data = [dict(u='http://archive.org/d',
                     p='L',
                     v='http://www.archive.org/',
@@ -90,7 +99,7 @@ class HQTestCase(unittest.TestCase):
         assert type(data.get('t')) == float
 
     def testFinished(self):
-        print >>sys.stderr, "testFinished..."
+        self.logger.info('testFinished')
         data = [dict(u='http://archive.org/',
                      )]
         r = hq.app.request('/wide/mfinished', method='POST',
@@ -102,14 +111,14 @@ class HQTestCase(unittest.TestCase):
         assert type(data.get('t')) == float
 
     def testFeed(self):
-        print >>sys.stderr, "testFeed..."
+        self.logger.info('testFeed')
         r = hq.app.request('/wide/feed?' + urlencode(dict(name=0)))
-        print >>sys.stderr, r
+        self.logger.info('%s', r)
 
     def testStatus(self):
-        print >>sys.stderr, "testStatus..."
+        self.logger.info('testStatus')
         r = hq.app.request('/wide/status')
-        #print >>sys.stderr, r
+        self.logger.debug('%r', r)
         assert r.status == '200 OK', r
         assert r.headers['content-type'] == 'text/json', r
         data = json.loads(r.data)

@@ -1,7 +1,7 @@
 #!/usr/bin/python
 import sys
 import os
-import testhelper
+from fixture import *
 import unittest
 
 import rcom

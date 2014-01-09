@@ -1,5 +1,5 @@
 #!/usr/bin/python
-import testhelper
+from fixture import *
 import unittest
 
 import tasprefix

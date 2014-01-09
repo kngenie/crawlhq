@@ -3,7 +3,7 @@
 import sys
 import os
 
-import testhelper
+from fixture import *
 import unittest
 import json
 import subprocess
@@ -12,9 +12,9 @@ from urllib import urlencode
 from jobconfigs import JobConfig
 
 DATADIR = '/tmp/hq'
-datadir = testhelper.TestDatadir(DATADIR)
+datadir = TestDatadir(DATADIR)
 
-import testjobconfigs
+from fixture.testjobconfigs import *
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '../ws'))
 import inq

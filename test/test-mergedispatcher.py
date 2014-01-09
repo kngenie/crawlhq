@@ -1,5 +1,5 @@
 #
-from testhelper import *
+from fixture import *
 import unittest
 import urihash
 import struct

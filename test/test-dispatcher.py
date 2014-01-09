@@ -1,11 +1,13 @@
 #
-from testhelper import *
+#from testhelper import *
+from fixture import *
 import unittest
 
 from dispatcher import *
 from filequeue import FileEnqueue
 
-import testseen
+#import testseen
+from fixture.testseen import *
 
 class WorksetMapperTestCase(unittest.TestCase):
     def setUp(self):

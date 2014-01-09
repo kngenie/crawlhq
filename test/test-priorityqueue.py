@@ -2,7 +2,7 @@
 #
 import sys
 import os
-import testhelper
+from fixture import *
 import unittest
 import json
 import time
