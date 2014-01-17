@@ -1,6 +1,7 @@
 import sys, os
 import re
-import zookeeper as zk
+from kazoo.client import (KazooClient, KazooState)
+from kazoo.exceptions import (ZookeeperError, NoNodeError)
 import logging
 import time
 
@@ -8,25 +9,13 @@ __all__ = ['Coordinator']
 
 NODE_HQ_ROOT = '/hq'
 
-PERM_WORLD = [dict(perms=zk.PERM_ALL,scheme='world',id='anyone')]
-
-# this has global effect
-zk.set_debug_level(zk.LOG_LEVEL_WARN)
-
-def create_flags(s):
-    """convert textual node creation flags into numerical value for API."""
-    f = 0
-    for c in s:
-        if c == 'e': f |= zk.EPHEMERAL
-        if c == 's': f |= zk.SEQUENCE
-    return f
-    
 class Coordinator(object):
     def __init__(self, zkhosts, root=NODE_HQ_ROOT, alivenode='alive',
                  readonly=False, role=None):
         """zkhosts: a string or a list. list will be ','.join-ed into a string.
         root: root node path (any parents must exist, if any)
         """
+        self.LOGGER = logging.getLogger('hq.zkcoord')
         
         if not isinstance(zkhosts, basestring):
             zkhosts = ','.join(zkhosts)
@@ -38,99 +27,97 @@ class Coordinator(object):
 
         self.NODE_SERVERS = self.ROOT + '/servers'
         self.NODE_ME = self.NODE_SERVERS+'/'+self.nodename
+        self.NODE_MYJOBS = self.NODE_ME + '/jobs'
         self.NODE_GJOBS = self.ROOT + '/jobs'
 
         self.__listeners = {}
 
-        # allow system to start without ZooKeeper
-        if self._connect():
+        self.zh = None
+        self.zstate = None
 
-            self.jobs = {}
-
-            if not readonly:
-                self.initialize_node_structure()
-
-                if not zk.exists(self.zh, self.NODE_ME):
-                    zk.create(self.zh, self.NODE_ME, '', PERM_WORLD)
-
-                self.NODE_MYJOBS = self.NODE_ME+'/jobs'
-                if not zk.exists(self.zh, self.NODE_MYJOBS):
-                    zk.acreate(self.zh, self.NODE_MYJOBS, '', PERM_WORLD)
-
-            # setup notification
-            zk.get_children(self.zh, self.NODE_SERVERS, self.__servers_watcher)
-            zk.get_children(self.zh, self.NODE_GJOBS, self.__jobs_watcher)
-            #zk.get_children(self.zh, self.NODE_ME, self.__watcher)
-
-            #self.publish_alive()
+        self._connect()
 
     def _connect(self):
         try:
-            self.zh = zk.init(self.zkhosts, self.__watcher)
-            self.zkerror = None
-            return True
-        except zk.ZooKeeperException, ex:
+            if self.zh: self.zh.stop()
+            self.LOGGER.debug("connecting to %s", self.zkhosts)
+            self.zh = KazooClient(hosts=self.zkhosts)
+            self.zh.add_listener(self.__watcher)
+            # this will wait until connection is established.
+            self.zh.start()
+        except ZookeeperError as ex:
             self.zh = None
             self.zkerror = ex
-            return False
+
+    def _initialize(self):
+        if not self.readonly:
+            if self.zstate is None:
+                self.zh.ensure_path(self.NODE_SERVERS)
+                self.zh.ensure_path(self.NODE_GJOBS)
+            self.publish_alive()
+            if not self.zh.exists(self.NODE_ME):
+                self.zh.create(self.NODE_ME, '')
+            if not self.zh.exists(self.NODE_MYJOBS):
+                self.zh.acreate(self.NODE_MYJOBS)
+        # setup notifications
+        self.zh.get_children(self.NODE_SERVERS, self.__servers_watcher)
+        self.zh.get_children(self.NODE_GJOBS, self.__jobs_watcher)
+
+    def __watcher(self, state):
+        # client level callback method. this method should not block.
+        if state == KazooState.LOST:
+            # session expiration
+            self.zstate = state
+        elif state == KazooState.SUSPENDED:
+            # disconnected, session is still alive
+            self.zstate = state
+        else:
+            # (re)connected
+            self.LOGGER.debug("connected")
+            self.zh.handler.spawn(self._initialize)
+            self.zstate = state
 
     def get_status_text(self):
         return self.zkerror
 
-    def create(self, path, data='', perm=PERM_WORLD, flags=''):
-        return zk.create(self.zh, path, data, perm, create_flags(flags))
-    def acreate(self, path, data='', perm=PERM_WORLD, flags=''):
-        try:
-            return zk.acreate(self.zh, path, data, perm, create_flags(flags))
-        except SystemError:
-            # acreate C code often returns error without setting exception,
-            # which cuases SystemError.
-            pass
+    def create(self, path, data=''): #, perm=PERM_WORLD, flags=''):
+        return self.zh.create(path, data)
+    def acreate(self, path, data=''): #, perm=PERM_WORLD, flags=''):
+        return self.zh.acreate(path, data)
+    def exists(self, path):
+        return self.zh.exists(path)
     def delete(self, path):
         try:
-            return zk.delete(self.zh, path)
-        except zk.NoNodeException, ex:
+            return self.zh.delete(path)
+        except NoNodeError as ex:
             pass
-
-    def initialize_node_structure(self):
-        for p in (self.ROOT, self.NODE_SERVERS, self.NODE_GJOBS):
-            if not zk.exists(self.zh, p):
-                self.create(p)
-        
-    def __watcher(self, zh, evtype, state, path):
-        """connection/session watcher"""
-        logging.debug('event%s', str((evtype, state, path)))
-        if evtype == zk.SESSION_EVENT:
-            if state == zk.CONNECTED_STATE:
-                self.publish_alive()
-            elif state == zk.EXPIRED_SESSION_STATE:
-                # unrecoverable state - close and reconnect
-                zk.close(self.zh)
-                self._connect()
+    def get_children(self, path, watch=None):
+        return self.zh.get_children(path, watch=watch)
 
     def __servers_watcher(self, zh, evtype, state, path):
+        """called when HQ servers are added / dropped."""
         try:
-            ch = zk.get_children(self.zh, self.NODE_SERVERS,
-                                 self.__servers_watcher)
-            logging.info('servers added/removed:%s', str(ch))
+            ch = self.get_children(self.NODE_SERVERS,
+                                   watch=self.__servers_watcher)
+            self.LOGGER.info('servers added/removed:%s', str(ch))
             self.fire_event('serverschanged')
-        except zk.ZooKeeperException:
-            logging.warn('zk.get_children(%r) failed', self.NODE_SERVERS,
-                         exc_info=1)
+        except ZookeeperError as ex:
+            self.LOGGER.warn('zk.get_children(%r) failed', self.NODE_SERVERS,
+                             exc_info=1)
         
     def __jobs_watcher(self, zh, evtype, state, path):
+        """called when jobs are added / dropped."""
         try:
-            logging.info('%s children changed', self.NODE_GJOBS)
-            ch = zk.get_children(self.zh, self.NODE_GJOBS,
-                                 self.__jobs_watcher)
+            self.LOGGER.info('%s children changed', self.NODE_GJOBS)
+            ch = self.get_children(self.NODE_GJOBS, watch=self.__jobs_watcher)
             self.fire_event('jobschanged')
-        except zk.ZooKeeperException:
-            logging.warn('zk.get_children(%r) failed', self.NODE_GJOBS,
-                         exc_info=1)
+        except ZooKeeperError as ex:
+            self.LOGGER.warn('get_children(%r) failed', self.NODE_GJOBS,
+                             exc_info=1)
 
     def publish_alive(self):
         node_alive = self.NODE_ME+'/'+self.alivenode
-        self.acreate(node_alive, flags='e')
+        self.zh.create_async(node_alive, ephemeral=True)
 
     def publish_job(self, job):
         '''job: hq.CrawlJob'''
@@ -138,34 +125,37 @@ class Coordinator(object):
         # update 10 minutes interval
         if ju is None or ju < time.time() - 10*60:
             NODE_MYJOB = self.NODE_MYJOBS+'/'+job.jobname
-            def set_complete(zh, rc, pv):
+            def set_complete(a):
                 #print >>sys.stderr, "aset completed: %s" % str(args)
-                if rc == zk.NONODE:
-                    # does not exist yet - create anew
-                    zk.acreate(zh, NODE_MYJOB, '', PERM_WORLD)
+                if a.exception == NoNodeError:
+                    # node does not exist yet - create anew
+                    self.zh.create_async(NODE_MYJOB, '')
             try:
-                zk.aset(self.zh, NODE_MYJOB, '', -1, set_complete)
+                a = self.zh.set_async(NODE_MYJOB, '')
+                a.rawlink(set_complete)
             except:
-                logging.warn('aset failed', exc_info=1)
+                self.LOGGER.warn('aset failed', exc_info=1)
                 pass
 
             node2 = self.NODE_GJOBS+'/'+job.jobname
-            self.acreate(node2)
-            self.acreate('/'.join((self.NODE_GJOBS, job.jobname, self.nodename)),
-                         flags='e')
+            self.zh.create_async(node2)
+            self.zh.create_async('{}/{}/{}'.format(self.NODE_GJOBS,
+                                                   job.jobname,
+                                                   self.nodename),
+                                 ephemeral=True)
             self.jobs[job] = time.time()
 
     def publish_client(self, job, client):
         pass
     
     def get_servers(self):
-        return zk.get_children(self.zh, self.NODE_SERVERS)
+        return self.zh.get_children(self.NODE_SERVERS)
 
     def get_server_job(self, server, job):
         p = self.NODE_SERVERS+'/'+server+'/jobs/'+job
         j = dict()
         try:
-            nodeval = zk.get(self.zh, p)
+            nodeval = self.zh.get(p)
             attr = nodeval[1]
             j['ts'] = attr['mtime'] / 1000.0
         except NoNodeException, ex:
@@ -177,16 +167,16 @@ class Coordinator(object):
         server = server or self.nodename
         status = dict(name=server)
         try:
-            node = zk.get(self.zh, self.NODE_SERVERS+'/'+server+'/alive')
+            node = self.zh.get(self.NODE_SERVERS+'/'+server+'/alive')
             status['alive'] = node[1]
-        except zk.NoNodeException:
+        except NoNodeError as ex:
             status['alive'] = False
 
         jobspath = self.NODE_SERVERS+'/'+server+'/jobs'
         if jobs is None:
             try:
-                jobs = zk.get_children(self.zh, jobspath)
-            except zk.NoNodeException:
+                jobs = self.get_children(jobspath)
+            except NoNodeError:
                 jobs = []
         elif isinstance(jobs, basestring):
             jobs = [jobs]
@@ -206,8 +196,8 @@ class Coordinator(object):
         """
         p = self.NODE_GJOBS+'/'+jobname+'/servers'
         try:
-            svids = zk.get_children(self.zh, p)
-        except zk.NoNodeException, ex:
+            svids = self.get_children(p)
+        except NoNodeError as ex:
             return {}
             
         servers = {}
@@ -216,7 +206,7 @@ class Coordinator(object):
                 svid = int(name)
             except:
                 continue
-            nodevals = zk.get(self.zh, p+'/'+str(svid))
+            nodevals = self.zh.get(p+'/'+str(svid))
             if nodevals[0]:
                 servers[svid] = nodevals[0]
         return servers
@@ -233,15 +223,15 @@ class Coordinator(object):
 
         try:
             p = self.NODE_SERVERS
-            ss = zk.get_children(self.zh, self.NODE_SERVERS)
+            ss = self.get_children(self.NODE_SERVERS)
             for s in ss:
                 if s in regservers: continue
                 if not self.is_server_alive(s): continue
                 p = self.NODE_SERVERS+'/'+s+'/jobs/'+jobname
-                if zk.exists(self.zh, p):
+                if self.exists(p):
                     servers.append(dict(name=s))
-        except zk.ZooKeeperException, ex:
-            logging.debug('zookeeper access failed', exc_info=1)
+        except ZookeeperError as ex:
+            self.LOGGER.debug('zookeeper access failed', exc_info=1)
         
         return servers
 
@@ -266,7 +256,7 @@ class Coordinator(object):
 
     def is_server_alive(self, server):
         p = self.NODE_SERVERS+'/'+server+'/alive'
-        return zk.exists(self.zh, p)
+        return self.exists(p)
 
     def add_listener(self, ev, listener):
         if not isinstance(ev, basestring):
@@ -294,12 +284,25 @@ class Coordinator(object):
                 try:
                     listener(*args)
                 except:
-                    logging.warn('error running listener %r '
-                                 'with ev=%r, args=%r', listener, ev, args,
-                                 exc_info=1)
+                    self.LOGGER.warn('error running listener %r '
+                                     'with ev=%r, args=%r', listener, ev, args,
+                                     exc_info=1)
             
     def shutdown(self):
         if self.zh:
-            zk.close(self.zh)
+            self.zh.stop()
             self.zh = None
     
+
+if __name__ == '__main__':
+    # for quick testing
+    logging.basicConfig(level=logging.DEBUG)
+    zkhosts = sys.argv[1]
+    coord = Coordinator(zkhosts, readonly=True)
+    logging.debug("coord=%s", coord)
+
+    logging.debug("get_servers()")
+    print coord.get_servers()
+
+    print >>sys.stderr, "shutting down {}".format(coord)
+    coord.shutdown()
