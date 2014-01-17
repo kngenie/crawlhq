@@ -57,7 +57,7 @@ class Shuffle(object):
 
         client.batch_submit_discovered(dequewrapper(deque))
 
-if __name__ == '__main__':
+def main():
     from optparse import OptionParser
 
     opt = OptionParser('%prog JOBNAME')
@@ -77,3 +77,6 @@ if __name__ == '__main__':
                 shuffle.shuffle_divert(wsid)
             except Exception, ex:
                 print >>sys.stderr, str(ex)
+
+if __name__ == '__main__':
+    main()
