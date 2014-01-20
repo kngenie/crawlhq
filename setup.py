@@ -9,12 +9,14 @@ def list_modules():
     return [n[:-3] for n in os.listdir('lib') if n.endswith('.py')]
 
 ext_modules=[
-    Extension('cfpgenerator', ['cext/pythonif.cpp', 'cext/fpgenerator.cpp'])
+    Extension('cfpgenerator', ['cext/pythonif.cpp', 'cext/fpgenerator.cpp'],
+              language='c++')
     ]
 # XXX linux only
 if os.path.isfile('/usr/lib/libleveldb.a'):
     ext_modules.append(Extension('leveldb', ['cext/leveldb.cpp'],
-                                 libraries=['leveldb']))
+                                 lanuguage='c++',
+                                 libraries=['leveldb', 'snappy']))
 
 setup(
     name="crawlhq",
