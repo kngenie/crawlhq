@@ -4,9 +4,13 @@ import unittest
 import urihash
 import struct
 import random
+import subprocess
+import logging
 
-from mergedispatcher import MergeDispatcher
+from mergedispatcher import MergeDispatcher, SeenFile
 from fileinq import IncomingQueue
+
+logging.basicConfig(level=logging.DEBUG)
 
 def rand(a, b):
     """generates uniformly random integer in range [a, b)."""
@@ -23,13 +27,18 @@ class MergeDispatcherTestCase(unittest.TestCase):
         def workset(self, furi):
             return self._workset
     class TestScheduler(object):
-        def __init__(self):
+        """if failat is a number, schedule() will fail at failat-th
+        call. this simulates abnormal termination."""
+        def __init__(self, failat=None):
             self.curis = []
+            self.failat = failat
         def is_active(self, clid):
             return True
         def flush_workset(self, wsid):
             pass
         def schedule(self, curi):
+            if self.failat is not None and len(self.curis) + 1 >= self.failat:
+                raise RuntimeException()
             self.curis.append(curi)
 
     def setUp(self):
@@ -51,9 +60,9 @@ class MergeDispatcherTestCase(unittest.TestCase):
             hash = urihash.urikey(url['u'])
             url['id'] = hash
         urls.sort(key=lambda url: url['id'])
-        with open(seenfile, 'w') as sw:
+        with SeenFile(seenfile, 'wb') as sw:
             for url in urls:
-                sw.write(struct.pack('l', url['id']))
+                sw.write((url['id'], 0))
         return seenfile
 
     def generate_random_urls(self, n):
@@ -155,16 +164,69 @@ class MergeDispatcherTestCase(unittest.TestCase):
     def check_seenfile(self, seenfile):
         # check if SEEN file is error free
         print >>sys.stderr, "checking SEEN file integrity"
-        with open(seenfile, 'r') as f:
+        count = 0
+        with SeenFile(seenfile, 'rb') as f:
             lastuid = None
             while 1:
-                rec = f.read(8)
-                if rec == '': break
-                assert len(rec) == 8
-                uid = struct.unpack('l', rec)
+                rec = f.next()
+                if not rec.key: break
+                count += 1
+                uid = rec.key
                 if lastuid is not None:
                     assert lastuid < uid
                 lastuid = uid
+        return count
+
+    def testRecovery(self):
+        """tests recovery run after processinq is terminated during
+        scheduling (phase 2)."""
+        # TODO: there's another case of getting terminated during
+        # phase 1 - actually it's more likely to happen as it takes
+        # longer than phase 2. fortunately phase 1 recovery is simpler
+        # than phase 2 recovery - just starting over.
+        urls1 = self.generate_random_urls(50)
+        self.inq.add(urls1)
+        self.inq.close()
+
+        seenfile = self.create_seen([])
+
+        # let TestScheduler exit on 20th (i.e. after scheduling 19) cURLs.
+        self.scheduler.failat = 20
+        try:
+            self.dispatcher.processinq(0)
+            assert False, 'should raise RuntimeException'
+        except Exception as ex:
+            # expected
+            pass
+
+        assert len(self.scheduler.curis) == 19
+
+        #subprocess.call(['ls', '-l', os.path.dirname(seenfile)])
+
+        self.scheduler.failat = None
+        # enqueue another 50 URLs to verify they are not consumed by
+        # next processinq run.
+        urls2 = self.generate_random_urls(50)
+        self.inq.add(urls2)
+
+        self.dispatcher.processinq(0)
+
+        # TODO: want to check all intermediate files are cleaned up?
+        #subprocess.call(['ls', '-l', os.path.dirname(seenfile)])
+
+        n = self.check_seenfile(seenfile)
+        # check: all of urls1 are now seen, none from urls2
+        assert n == len(urls1)
+        # check: all of urls1 are scheduled, no duplicates
+        assert len(self.scheduler.curis) == len(urls1)
+        scheduled_urls = [u['u'] for u in self.scheduler.curis]
+        missing = []
+        for u in urls1:
+            found = (u['u'] in scheduled_urls)
+            print >>sys.stderr, "{} {}".format(u['u'], found)
+            if not found: missing.append(u)
+        assert len(missing) == 0, "missing {} URLs {}".format(
+            len(missing), missing)
 
 if __name__ == '__main__':
     unittest.main()

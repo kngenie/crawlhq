@@ -13,13 +13,51 @@
 
 using namespace std;
 
+// KEY is signed - this makes it easier for python to handle it.
 typedef long long KEY;
+// time_t is now 64bit. this is a huge waste of space as upper 32bit will
+// be zero until 2106/3/7.
+//typedef time_t TS;
+// this works until year 2106 (while 32bit time_t = int works until 2038).
+typedef unsigned int TS;
+
+#pragma pack(push, 4)
+struct RECORD {
+  KEY key;
+  TS ts;
+  void operator=(RECORD &other) {
+    key = other.key;
+    ts = other.ts;
+  }
+  bool operator<(RECORD &other) {
+    return key < other.key || key == other.key && ts > other.ts;
+  }
+  bool operator==(RECORD &other) {
+    return key == other.key && ts == other.ts;
+  }
+  static int compare(RECORD &a, RECORD &b) {
+    if (a.key < b.key)
+      return -1;
+    if (a.key > b.key)
+      return 1;
+    // larger timestamp is considered smaller, so that later record
+    // prevail during the merge (merge code relies on this behavior)
+    // this also guarantees later record survives if there are multiple
+    // reocrds of the same key within a SEEN file.
+    if (a.ts > b.ts)
+      return -1;
+    if (a.ts < b.ts)
+      return 1;
+    return 0;
+  }
+};
+#pragma pack(pop)
 
 class MergeSource {
   int fd;
   off64_t start;
   off64_t bound;
-  KEY top;
+  RECORD top;
 public:
   MergeSource(const char *fn, off64_t start, off64_t bound)
     : start(start), bound(bound) {
@@ -47,8 +85,8 @@ public:
       fd = -1;
       return false;
     }
-    ssize_t bytes = read(fd, &top, sizeof(KEY));
-    if (bytes != sizeof(KEY)) {
+    ssize_t bytes = read(fd, &top, sizeof(top));
+    if (bytes != sizeof(top)) {
       ::close(fd);
       fd = -1;
       return false;
@@ -63,20 +101,24 @@ public:
     if (!other.active()) return true;
     return top < other.top;
   }
-  bool operator==(KEY key) {
-    if (!active()) return false;
-    return top == key;
+  /*
+  bool operator==(RECORD &other) {
+    if (!active() || !other.active()) return false;
+    return top == other;
   }
-  bool operator!=(KEY key) {
-    if (!active()) return true;
-    return top != key;
+  */
+  /*
+  bool operator!=(RECORD &other) {
+    if (!active() || !other.active()) return true;
+    return !(top.key == other.top.key);
   }
+  */
   void close() {
     fd = -1;
   }
   KEY copyrecord(int outfd) {
     if (!active()) return 0;
-    KEY top_save = top;
+    KEY top_save = top.key;
     ssize_t n = write(outfd, &top, sizeof(top));
     assert(n == sizeof(top));
 
@@ -87,6 +129,9 @@ public:
     if (!active()) return;
     fetch();
   }
+  bool samekey(KEY key) {
+    return active() && top.key == key;
+  }
 };
 
 void usage_and_exit() {
@@ -96,6 +141,9 @@ void usage_and_exit() {
        << "merged and sorted SEEN file will be saved in SEEN.fixed." << endl
        << "again, program will fail if file exists." << endl
        << "input SEEN files will not be modified." << endl;
+  cerr << "record size is " << sizeof(RECORD) << endl;
+  cerr << "  KEY:" << sizeof(KEY) << endl;
+  cerr << "  TS:" << sizeof(TS) << endl;
   exit(1);
 }
 
@@ -107,6 +155,11 @@ option options[] = {
 int maxRecordCount = 268435456;
 mode_t seenfileMode = (S_IRUSR|S_IWUSR|S_IRGRP|S_IROTH);
 
+int compareRecords(const void *a, const void *b) {
+  return RECORD::compare(*(RECORD *)a, *(RECORD *)b);
+}
+  
+// old code
 int compareInt64(const void *a, const void *b) {
   KEY va = *(KEY *)a;
   KEY vb = *(KEY *)b;
@@ -234,7 +287,7 @@ int main(int argc, char *argv[]) {
 	sources[i] = sources[i + 1];
 	sources[i + 1] = t;
       }
-      if (*sources[0] != key) break;
+      if (!sources[0]->samekey(key)) break;
       sources[0]->skip();
     }
   }
