@@ -23,62 +23,15 @@ from priorityqueue import PriorityEnqueue, PriorityDequeue
 from scheduler import Scheduler
 from executor import *
 import urihash
-from dispatcher import WorksetMapper, Dispatcher, FPSortingQueueFileReader
+from dispatcher import WorksetMapper, FPSortingQueueFileReader
+from leveldispatcher import LevelDispatcher
 from weblib import QueryApp
 import rcom
 from handlers import *
+from inqprocessor import CrawlMapper
 
 class UnknownJobError(Exception):
     pass
-
-class CrawlMapper(WorksetMapper):
-    """maps client queue id to set of WorkSets
-    """
-    def __init__(self, crawljob, nworksets_bits):
-        super(CrawlMapper, self).__init__(nworksets_bits)
-        self.crawljob = crawljob
-        self.jobconfigs = self.crawljob.jobconfigs
-        self.job = self.crawljob.jobname
-        #self.nworksets = (1 << nworksets_bits)
-        self.load_workset_assignment()
-
-        self.client_last_active = {}
-
-    def create_default_workset_assignment(self):
-        num_nodes = self.jobconfigs.get_jobconf(self.job, 'nodes', 20)
-        return list(itertools.islice(
-                itertools.cycle(xrange(num_nodes)),
-                0, self.nworksets))
-        
-    def load_workset_assignment(self):
-        wscl = self.jobconfigs.get_jobconf(self.job, 'wscl')
-        if wscl is None:
-            wscl = self.create_default_workset_assignment()
-            self.jobconfigs.save_jobconf(self.job, 'wscl', wscl)
-        if len(wscl) > self.nworksets:
-            wscl[self.nworksets:] = ()
-        elif len(wscl) < self.nworksets:
-            wscl.extend(itertools.repeat(None, self.nworksets-len(wscl)))
-        self.worksetclient = wscl
-
-    def wsidforclient(self, clid):
-        '''return list of workset ids for node name of nodes-node cluster'''
-        # XXX linear search
-        qids = [i for i in xrange(len(self.worksetclient))
-                if self.worksetclient[i] == clid]
-        return qids
-
-    def clientforwsid(self, wsid):
-        if wsid < 0 or wsid >= len(self.worksetclient):
-            raise ValueError, 'wsid %d out range (0-%d)' % (
-                wsid, len(self.worksetclient) - 1)
-        return self.worksetclient[wsid]
-
-    def client_activating(self, clid):
-        """called back by Scheduler when client gets a new feed request
-        when it is inactive."""
-        for wsid in self.wsidforclient(clid):
-            self.crawljob.workset_activating(wsid)
 
 class CrawlJob(object):
 
@@ -146,11 +99,12 @@ class CrawlJob(object):
         if self.dispatcher: return
         if self.dispatcher_mode == 'external':
             raise RuntimeError, 'dispatcher mode is %s' % self.dispatcher_mode
-        self.dispatcher = Dispatcher(self.hq.get_domaininfo(),
-                                     self.jobname,
-                                     mapper=self.mapper,
-                                     scheduler=self.scheduler,
-                                     inq=self.inq.deq)
+        self.dispatcher = LevelDispatcher(self.hq.get_domaininfo(),
+                                          self.jobname,
+                                          mapper=self.mapper,
+                                          scheduler=self.scheduler,
+                                          inq=self.inq.deq)
+        return self.dispatcher
         
     def shutdown_dispatcher(self):
         if not self.dispatcher: return
@@ -181,8 +135,7 @@ class CrawlJob(object):
         return r
         
     def workset_activating(self, *args):
-        self.init_dispatcher()
-        self.dispatcher.workset_activating(*args)
+        self.init_dispatcher().workset_activating(*args)
 
     def schedule(self, curis):
         '''schedule curis bypassing seen-check. typically used for starting
@@ -197,8 +150,7 @@ class CrawlJob(object):
         return self.inq.add(curis)
 
     def processinq(self, maxn):
-        self.init_dispatcher()
-        return self.dispatcher.processinq(maxn)
+        return self.init_dispatcher().processinq(maxn)
 
     def makecuri(self, o):
         # temporary rescue measure. delete after everything's got fixed.
@@ -255,16 +207,10 @@ class CrawlJob(object):
         """return number of items in seen db.
         can take pretty long to return.
         """
-        self.init_dispatcher()
-        if self.dispatcher.seen:
-            return self.dispatcher.seen._count()
-        else:
-            # TODO:
-            raise ValueError, 'seen db is not opened'
+        return self.init_dispatcher().count_seen()
 
     def clear_seen(self):
-        self.init_dispatcher()
-        self.dispatcher.clear_seen()
+        self.init_dispatcher().clear_seen()
 
 class Headquarters(object):
     '''now just a collection of CrawlJobs'''

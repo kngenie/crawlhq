@@ -1,12 +1,14 @@
-#
-#from testhelper import *
+# this is a test for LevelDispatcher. named test-dispatcher.py for historical
+# reasons (well, actually it's not testing LevelDB part of it. it uses
+# in-memory stub seen database.)
+
 from fixture import *
 import unittest
 
 from dispatcher import *
+from leveldispatcher import LevelDispatcher
 from filequeue import FileEnqueue
 
-#import testseen
 from fixture.testseen import *
 
 class WorksetMapperTestCase(unittest.TestCase):
@@ -58,7 +60,7 @@ class DispatcherTestCase(unittest.TestCase):
         self.domaininfo = self.TestDomainInfo()
         self.mapper = self.TestMapper()
         self.scheduler = self.TestScheduler()
-        self.dispatcher = Dispatcher(self.domaininfo,
+        self.dispatcher = LevelDispatcher(self.domaininfo,
                                      'wide', self.mapper, self.scheduler)
 
         # plain FileEnqueue for passing CURL to Dispatcher

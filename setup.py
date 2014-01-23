@@ -6,7 +6,8 @@ import os
 import glob
 # tentative - until all hq modules are moved under 'crawlhq' package.
 def list_modules():
-    return [n[:-3] for n in os.listdir('lib') if n.endswith('.py')]
+    return [n[:-3] for n in os.listdir('lib')
+            if not n.startswith('.') and n.endswith('.py')]
 
 ext_modules=[
     Extension('cfpgenerator', ['cext/pythonif.cpp', 'cext/fpgenerator.cpp'],
@@ -17,6 +18,11 @@ if os.path.isfile('/usr/lib/libleveldb.a'):
     ext_modules.append(Extension('leveldb', ['cext/leveldb.cpp'],
                                  lanuguage='c++',
                                  libraries=['leveldb', 'snappy']))
+
+# probably we could make mseenrepair an extention module.
+action = sys.argv and sys.argv[0]
+if action in ("install", "develop"):
+    os.system("cd cext; make")
 
 setup(
     name="crawlhq",
@@ -35,7 +41,8 @@ setup(
     zip_safe=False,
     entry_points={
         'console_scripts':[
-            'shuffle = shuffle:main'
+            'shuffle = shuffle:main',
+            'processinq-sa = inqprocessor:main_standalone'
             ]
         },
     install_requires=[
@@ -52,8 +59,8 @@ setup(
         ],
     # TODO: use entry_points
     scripts=[
-        'bin/processinq-sa',
         'bin/schedule',
+        'cext/mseenrepair',
         ],
     data_files=[
         (os.path.join(sys.prefix, d), ff) for d, ff in

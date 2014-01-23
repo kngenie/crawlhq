@@ -4,7 +4,10 @@ import jobconfigs
 import logging
 
 class TestJobConfigs(object):
-    JOBS = ('wide',)
+    JOBS = {
+        'wide': { 'wscl':[0 for i in xrange(1 << hqconfig.NWORKSETS_BITS)],
+                  }
+        }
     def shutdown(self):
         pass
     def get_job(self, job):
@@ -13,7 +16,7 @@ class TestJobConfigs(object):
         logging.debug('jobconfigs=%s', jobconfigs)
         return jobconfigs.JobConfig(self, dict(name=job))
     def get_jobconf(self, job, pname, default=None, nocreate=0):
-        return default
+        return self.JOBS.get(job, {}).get(pname, default)
     def save_jobconf(self, jobname, pname, value, nocreate=0):
         pass
     def job_exists(self, job):

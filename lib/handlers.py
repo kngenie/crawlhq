@@ -5,6 +5,8 @@ import time
 import json
 import logging
 
+import weblib
+
 # Dependencies
 # self.hq: global Headquarter singleton
 # self.decode_object(): provided by weblib.QueryApp
@@ -90,3 +92,20 @@ class DiscoveredHandler(object):
             return dict(success=0, worker=os.getpid(), err=str(ex))
         r = dict(success=1, worker=os.getpid())
         return r
+
+class DispatcherAPI(weblib.QueryApp):
+    def do_processinq(self, job):
+        """process incoming queue. max parameter advise uppoer limit on
+        number of URIs processed. actually processed URIs may exceed that
+        number if incoming queue is storing URIs in chunks
+        """
+        p = web.input(max=500)
+        maxn = int(p.max)
+        result = dict(job=job, inq=0, processed=0, scheduled=0, max=maxn,
+                      td=0.0, ts=0.0)
+        start = time.time()
+
+        result.update(self.get_job(job).processinq(maxn))
+        
+        result.update(t=(time.time() - start))
+        return result

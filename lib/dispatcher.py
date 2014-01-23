@@ -44,132 +44,6 @@ class WorksetMapper(object):
         # in lower bits.
         ws = hosthash >> (64 - self.nworksets_bits)
         return ws
-    
-import ctypes, ctypes.util
-import select
-import fcntl
-import termios
-import struct
-import errno
-import array
-
-libc = ctypes.cdll.LoadLibrary(ctypes.util.find_library('libc'))
-
-class Watch(object):
-    def __init__(self, wd):
-        self.wd = wd
-        self.c = threading.Condition()
-        self.available = False
-    def wait(self, timeout=None):
-        with self.c:
-            self.available = False
-            self.c.wait(timeout)
-            return self.available
-
-class InqueueWatcher(threading.Thread):
-    def __init__(self):
-        super(InqueueWatcher, self).__init__()
-        self.daemon = True
-        self.in_fd = libc.inotify_init()
-        if self.in_fd < 0:
-            logging.error('inotify_init failed')
-        self.watches = {}
-
-    def __del__(self):
-        self.shutdown()
-        super(InqueueWatcher, self).__del__()
-
-    def shutdown(self):
-        self.running = False
-
-    def run(self):
-        try:
-            self._poll = select.poll()
-            self._poll.register(self.in_fd, select.POLLIN)
-            self.loop()
-        except:
-            logging.error('self.loop error', exc_info=1)
-        finally:
-            print >>sys.stderr, "self.loop exited"
-            self._poll.unregister(self.in_fd)
-            os.close(self.in_fd)
-            for w in self.watches.values():
-                with w.c:
-                    w.c.notify_all()
-
-    def process_events(self):
-        # structure of fixed length part of inotify_event struct
-        fmt = 'iIII'
-        ssize = struct.calcsize(fmt)
-        # each event record must be read with one os.read() call.
-        # so you cannot do "read the first 16 byte, then name_len
-        # more bytes"
-        #b = os.read(self.in_fd, struct.calcsize(fmt))
-        #b = os.read(self.in_fd, 16)
-        buf = array.array('i', [0])
-        if fcntl.ioctl(self.in_fd, termios.FIONREAD, buf, 1) < 0:
-            return
-        rlen = buf[0]
-        try:
-            b = os.read(self.in_fd, rlen)
-        except:
-            logging.warn('read on in_fd failed', exc_info=1)
-            return
-        while b:
-            wd, mask, cookie, name_len = struct.unpack(fmt, b[:ssize])
-            name = b[ssize:ssize + name_len]
-            b = b[ssize + name_len:]
-            # notify Condition corresponding to wd
-            if (mask & 0x80) == 0x80:
-                logging.info('new queue file %s' % name)
-                for w in self.watches.values():
-                    if w.wd == wd:
-                        with w.c:
-                            w.available = True
-                            w.c.notify()
-
-    def loop(self):
-        self.running = True
-        while self.running:
-            # poll with timeout for checking self.running
-            try:
-                r = self._poll.poll(500)
-            except select.error as ex:
-                if ex[0] == errno.EINTR:
-                    # nofity all conditions so that waiting clients
-                    # wake up and (probably) exit
-                    # (this is ineffective since only main thread
-                    # receives INT signal)
-                    for w in self.watches.values():
-                        with w.c:
-                            w.c.notify_all()
-                else:
-                    logging.error('poll failed', exc_info=1)
-                continue
-            if r and r[0][1] & select.POLLIN:
-                self.process_events()
-    def addwatch(self, path):
-        if path in self.watches:
-            return self.watches[path]
-        mask = 0x80 # IN_MOVED_TO
-        wd = libc.inotify_add_watch(self.in_fd, path, mask)
-        watch = self.watches[path] = Watch(wd)
-        return watch
-
-    def delwatch(self, path):
-        e = self.watches[path]
-        s = libc.inotity_rm_watch(self.in_fd, e.wd)
-        if s < 0:
-            logging.warn('failed to remove watch on %s(wd=%d)', path, e.wd)
-        else:
-            with e.c:
-                e.available = True
-                e.c.notify_all()
-            del self.watches[path]
-        
-    def available(self, path, timeout=None):
-        e = self.watches[path]
-        return e.wait(timeout)
 
 def FPSortingQueueFileReader(qfile, **kwds):
     def urikey(o):
@@ -221,30 +95,16 @@ class Dispatcher(object):
         if self.inq is None:
             qdir = hqconfig.inqdir(self.jobname)
             self.inq = FileDequeue(qdir, reader=FPSortingQueueFileReader)
-        # seen database is initialized lazily
-        self.seenfactory = hqconfig.factory.seenfactory()
-        self.seen = None
         self.diverter = Diverter(self.jobname, self.mapper)
         self.excludedlist = ExcludedList(self.jobname)
 
         self.workset_state = [0 for i in range(self.mapper.nworksets)]
-
-        if os.uname()[0] == 'Linux':
-            # TODO: this could be combined with FileDequeue above in a single class
-            if Dispatcher.inqwatcher is None:
-                iqw = Dispatcher.inqwatcher = InqueueWatcher()
-                iqw.start()
-            self.watch = Dispatcher.inqwatcher.addwatch(self.inq.qdir)
 
         # stats
         self.processedcount = 0
 
     def shutdown(self):
         #if self.job: self.job.shutdown()
-        if self.seen:
-            logging.info("closing seen db")
-            self.seen.close()
-            self.seen = None
         # logging.info("shutting down scheduler")
         # self.scheduler.shutdown()
         logging.info("shutting down diverter")
@@ -303,89 +163,16 @@ class Dispatcher(object):
         # workset, and this HQ server starts forwarding CURIs.
         self.scheduler.flush_workset(wsid)
 
-    def init_seen(self):
-        if not self.seen:
-            self.seen = self.seenfactory(self.jobname)
-
-    def clear_seen(self):
-        self.init_seen()
-        self.seen.clear()
-
     def processinq(self, maxn):
-        '''process incoming queue. maxn paramter adivces
-        upper limit on number of URIs processed in this single call.
-        actual number of URIs processed may exceed it if incoming queue
-        stores URIs in chunks.'''
-
-        # lazy initialization of seen db
-        self.init_seen()
-
-        result = dict(processed=0, scheduled=0, excluded=0, saved=0,
-                      td=0.0, ts=0.0)
-        for count in xrange(maxn):
-            t0 = time.time()
-            furi = self.inq.get(0.01)
-            
-            result['td'] += (time.time() - t0)
-            if furi is None: break
-            self.processedcount += 1
-            result['processed'] += 1
-            ws = self.mapper.workset(furi)
-            if self.is_workset_active(ws):
-                # no need to call self.workset_activating(). it's already
-                # done by Scheduler
-                di = self.domaininfo.get_byurl(furi['u'])
-                if di and di['exclude']:
-                    self.excludedlist.add(furi)
-                    result['excluded'] += 1
-                    continue
-                t0 = time.time()
-                if furi.get('f', 0):
-                    curi = dict(u=furi['u'])
-                    a = furi.get('w')
-                    if not isinstance(a, dict): a = furi
-                    for k in 'pvx':
-                        m = a.get(k)
-                        if m is not None: curi[k] = m
-                    self.scheduler.schedule(curi)
-                    result['scheduled'] += 1
-                else:
-                    suri = self.seen.already_seen(furi)
-                    if suri['e'] < int(time.time()):
-                        curi = dict(u=furi['u'], id=suri['_id'])
-                        a = furi.get('w')
-                        if not isinstance(a, dict): a = furi
-                        for k in 'pvx':
-                            m = a.get(k)
-                            if m is not None: curi[k] = m
-                        self.scheduler.schedule(curi)
-                        result['scheduled'] += 1
-                result['ts'] += (time.time() - t0)
-            else:
-                if self.workset_state[ws]:
-                    self.workset_deactivating(ws)
-                # client is not active
-                self.diverter.divert(str(ws), furi)
-                result['saved'] += 1
-        return result
-
-    def wait_available(self, timeout=None):
-        return self.watch.wait(timeout)
-
-# TODO move this class to ws directory
-class DispatcherAPI(weblib.QueryApp):
-    def do_processinq(self, job):
-        """process incoming queue. max parameter advise uppoer limit on
-        number of URIs processed. actually processed URIs may exceed that
-        number if incoming queue is storing URIs in chunks
+        """take maxn chunk of incoming cURLs, and schedule those 'unseen'
+        (whatever defined by implementation).
+        maxn is just an advice on how many cURLs it should process in
+        one cycle. actual implementation may ignore this value and choose
+        whatever unit of work suitable.
         """
-        p = web.input(max=500)
-        maxn = int(p.max)
-        result = dict(job=job, inq=0, processed=0, scheduled=0, max=maxn,
-                      td=0.0, ts=0.0)
-        start = time.time()
+        raise Exception('{}.processinq() has no implementation'.format(self))
 
-        result.update(self.get_job(job).processinq(maxn))
-        
-        result.update(t=(time.time() - start))
-        return result
+    def count_seen(self):
+        raise Exception('{}.count_seen() is not implemented'.format(self))
+    def clear_seen(self):
+        raise Exception('{}.clear_seen() is not implemented'.format(self))

@@ -8,6 +8,7 @@ import logging
 import time
 import json
 import mmap
+import struct
 
 import hqconfig
 
