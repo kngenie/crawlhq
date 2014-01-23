@@ -1,8 +1,8 @@
 # to be included in /etc/apache2/sites-available/default
 # be sure to install libapache2-mod-wsgi package
-WSGIDaemonProcess headquarters processes=1 threads=12 display-name=%{GROUP} python-path=/opt/hq/lib
-WSGIDaemonProcess hqstatus processes=1 threads=5 display-name=%{GROUP} python-path=/opt/hq/lib
-WSGIDaemonProcess hqinq processes=5 threads=1 display-name=%{GROUP} python-path=/opt/hq/lib
+WSGIDaemonProcess headquarters processes=1 threads=12 display-name=%{GROUP} python-path=/opt/hq/lib/python2.7
+WSGIDaemonProcess hqstatus processes=1 threads=5 display-name=%{GROUP} python-path=/opt/hq/lib/python2.7
+WSGIDaemonProcess hqinq processes=5 threads=1 display-name=%{GROUP} python-path=/opt/hq/lib/python2.7
 WSGIScriptAlias /hq/jobs /opt/hq/ws/hq.py
 WSGIScriptAlias /hq/inq /opt/hq/ws/inq.py
 WSGIScriptAlias /hq /opt/hq/ws/status.py
