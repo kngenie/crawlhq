@@ -10,16 +10,14 @@ def list_modules():
             if not n.startswith('.') and n.endswith('.py')]
 
 ext_modules=[
-    Extension('cfpgenerator', ['cext/pythonif.cpp', 'cext/fpgenerator.cpp'],
-              language='c++')
+    Extension('cfpgenerator', ['cext/pythonif.cpp', 'cext/fpgenerator.cpp'])
     ]
 # XXX linux only
 if os.path.isfile('/usr/lib/libleveldb.a'):
     ext_modules.append(Extension('leveldb', ['cext/leveldb.cpp'],
-                                 lanuguage='c++',
                                  libraries=['leveldb', 'snappy']))
 
-# probably we could make mseenrepair an extention module.
+# probably we could make mseenrepair an extension module.
 action = sys.argv and sys.argv[0]
 if action in ("install", "develop"):
     os.system("cd cext; make")
