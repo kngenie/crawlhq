@@ -227,7 +227,7 @@ class InqueueProcessor(object):
             )
         return r
 
-    def run(self, repeat=True):
+    def run(self, repeat=True, exhaust_delay=60):
         self.__repeat = repeat
         do_flush = False
         while 1:
@@ -240,14 +240,14 @@ class InqueueProcessor(object):
                 # but better-than-nothing solution until we implement
                 # inter-process communication.
                 if do_flush:
-                    dispatcher.flush_worksets()
+                    self.dispatcher.flush_worksets()
                     do_flush = False
                 logging.info("inq exhausted, sleeping for %ds",
-                             options.exhaust_delay)
+                             exhaust_delay)
                 # because wait_available cannot be interrupted by INT signal,
                 # we repeat short waits for exhaust_delay.
-                #time.sleep(options.exhaust_delay)
-                until = time.time() + options.exhaust_delay
+                #time.sleep(exhaust_delay)
+                until = time.time() + exhaust_delay
                 while time.time() < until and self.__repeat:
                     if self.watch.wait(1.0):
                         break
@@ -367,12 +367,13 @@ def main_standalone():
 
     logconf = dict(
         level=(logging.DEBUG if options.verbose else logging.INFO),
-        format='%(asctime)s %(levelname)s %(message)s',
+        format='%(asctime)s %(name)s %(levelname)s %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
         )
     if options.logfile:
         logconf['filename'] = options.logfile
     logging.basicConfig(**logconf)
+    logging.getLogger('kazoo.client').setLevel(logging.WARN)
 
     if len(args) < 1:
         opt.error('JOBNAME is missing')
@@ -402,6 +403,6 @@ def main_standalone():
     signal.signal(signal.SIGTERM, interrupted)
 
     try:
-        processor.run(not options.justonce)
+        processor.run(not options.justonce, options.exhaust_delay)
     finally:
         processor.shutdown()
