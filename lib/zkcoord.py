@@ -157,8 +157,8 @@ class Coordinator(object):
         try:
             nodeval = self.zh.get(p)
             attr = nodeval[1]
-            j['ts'] = attr['mtime'] / 1000.0
-        except NoNodeException, ex:
+            j['ts'] = attr.mtime / 1000.0
+        except NoNodeError as ex:
             j['ts'] = 0
         return j
             
@@ -248,9 +248,9 @@ class Coordinator(object):
         # assumption: there's no child under the server/job node.
         try:
             self.delete(p)
-        except NoNodeException, ex:
+        except NoNodeError as ex:
             pass
-        except NotEmptyException, ex:
+        except NotEmptyException as ex:
             # XXX
             pass
 

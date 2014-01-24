@@ -3,7 +3,13 @@ import os
 from configobj import ConfigObj
 
 # HQ installation directory
-HQHOME = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+# assuming hqconfig.py is under HQHOME/lib
+def _find_home():
+    d = os.path.dirname(__file__)
+    while not d.endswith('/lib'):
+        d = os.path.dirname(d)
+    return os.path.dirname(d)
+HQHOME = _find_home()
 
 # 255 worksets
 NWORKSETS_BITS = 8
