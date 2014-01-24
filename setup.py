@@ -24,7 +24,7 @@ if action in ("install", "develop"):
 
 setup(
     name="crawlhq",
-    version="1.0.0",
+    version="1.0.0p2",
     author="Kenji Nagahashi",
     author_email="kenji@archive.org",
     description="a hub for a large-scale web crawl",

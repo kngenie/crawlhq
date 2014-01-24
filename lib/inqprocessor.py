@@ -2,7 +2,6 @@
 runs dispatcher when necessary.
 """
 import sys, os
-sys.path[0:0] = (os.path.join(os.path.dirname(__file__), '../lib'),)
 import re
 from optparse import OptionParser
 from threading import Thread, Condition, RLock
@@ -179,8 +178,9 @@ def build_dispatcher(name, domaininfo, job, mapper, scheduler, inqueue):
 class InqueueProcessor(object):
     inqwatcher = None
     # TODO: allow different type of Dispatcher for each job.
-    def __init__(self, job, dispatcher_type):
+    def __init__(self, job, dispatcher_type, maxn):
         self.job = job
+        self.maxn = maxn
 
         self.domaininfo = hqconfig.factory.domaininfo()
         self.jobconfigs = hqconfig.factory.jobconfigs()
@@ -188,21 +188,23 @@ class InqueueProcessor(object):
 
         # per-job objects
         # TODO: process multiple jobs in one process
-        self.mapper = CrawlMapper(CrawlJob(self.job, jobconfigs),
+        self.mapper = CrawlMapper(CrawlJob(self.job, self.jobconfigs),
                                   hqconfig.NWORKSETS_BITS)
         self.scheduler = Scheduler(hqconfig.worksetdir(self.job),
-                                   mapper, reading=False)
+                                   self.mapper, reading=False)
         self.inqueue = IncomingQueue(hqconfig.inqdir(self.job),
                                      deq=PriorityDequeue)
         self.dispatcher = build_dispatcher(dispatcher_type,
-                                           domaininfo, self.job, mapper=mapper,
-                                           scheduler=scheduler, inq=inqueue)
+                                           self.domaininfo, self.job,
+                                           mapper=self.mapper,
+                                           scheduler=self.scheduler,
+                                           inqueue=self.inqueue)
 
-        if os.name()[0] == 'Linux':
-            if InqueueWatcher.inqwatcher is None:
-                iqw = InqueueWatcher.inqwatcher = InqueueWatcher()
+        if os.uname()[0] == 'Linux':
+            if InqueueProcessor.inqwatcher is None:
+                iqw = InqueueProcessor.inqwatcher = InqueueWatcher()
                 iqw.start()
-            self.watch = InqueueWatcher.inqwatcher.addwatch(self.inqueue.qdir)
+            self.watch = InqueueProcessor.inqwatcher.addwatch(self.inqueue.qdir)
 
     def shutdown(self):
         self.dispatcher.shutdown()
@@ -216,7 +218,7 @@ class InqueueProcessor(object):
     def processinq(self):
         # t and job should be set in Dispatcher.processinq
         start = time.time()
-        r = self.dispatcher.processinq(options.maxn)
+        r = self.dispatcher.processinq(self.maxn)
         r['t'] = time.time() - start
         r['job'] = self.job
         r.update(
@@ -231,7 +233,7 @@ class InqueueProcessor(object):
         while 1:
             r = self.processinq()
             logging.info("{job} {scheduled:d}/{processed:d} "
-                         "X:{excluded:d} T:{t:.3f}(D{td:.3f},S{ts:.3f} "
+                         "X:{excluded:d} T:{t:.3f}(D{td:.3f},S{ts:.3f}) "
                          "{eps:8.2f}/{ps:8.2f}/s".format(**r))
             if not r.get('processed'):
                 # flush worksets before sleeping - this is not perfect,
@@ -377,7 +379,7 @@ def main_standalone():
     job = args[0]
     active_clids = args[1:]
 
-    processor = InqueueProcessor(job, options.dispatcher)
+    processor = InqueueProcessor(job, options.dispatcher, options.maxn)
     if len(active_clids) < 1:
         # ugly direct access
         active_clids = processor.mapper.clients(os.uname()[1])
@@ -389,7 +391,8 @@ def main_standalone():
     # we override is_client_active() to tell dispatcher all assigned worksets
     # are *always* active.
     # TODO: needs clearner way to do this
-    dispatcher.is_client_active = lambda clid: str(clid) in active_clids
+    processor.dispatcher.is_client_active = \
+        lambda clid: str(clid) in active_clids
 
     def interrupted(sig, frame):
         logging.info("Interrupted, exiting...")
@@ -399,6 +402,6 @@ def main_standalone():
     signal.signal(signal.SIGTERM, interrupted)
 
     try:
-        processor.run(not options.justone)
+        processor.run(not options.justonce)
     finally:
         processor.shutdown()
