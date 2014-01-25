@@ -32,6 +32,8 @@ class Coordinator(object):
 
         self.__listeners = {}
 
+        self.jobs = {}
+
         self.zh = None
         self.zstate = None
 

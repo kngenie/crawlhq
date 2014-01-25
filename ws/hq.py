@@ -96,7 +96,7 @@ class CrawlJob(object):
             self.shutdown_dispatcher()
 
     def init_dispatcher(self):
-        if self.dispatcher: return
+        if self.dispatcher: return self.dispatcher
         if self.dispatcher_mode == 'external':
             raise RuntimeError, 'dispatcher mode is %s' % self.dispatcher_mode
         self.dispatcher = LevelDispatcher(self.hq.get_domaininfo(),
