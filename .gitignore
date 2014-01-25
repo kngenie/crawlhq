@@ -1,4 +1,6 @@
 *.pyc
 *.so
-cext/build/
-conf/hq.conf
+/cext/build/
+/conf/hq.conf
+/build
+/lib/crawlhq.egg-info
