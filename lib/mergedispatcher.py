@@ -18,6 +18,7 @@ class SeenRecord(object):
     RECSIZE = 12
     def __init__(self, key, ts):
         self.key = key
+        assert self.key is None or isinstance(self.key, (int, long))
         self.ts = ts
     def bits(self):
         if self.key is None:
@@ -39,12 +40,44 @@ class SeenRecord(object):
             bits = ''
         return cls.frombits(bits)
 
+class SeenRecordV1(object):
+    """older format of seen record. that has URL hash key only."""
+    RECSIZE = 8
+    def __init__(self, key, ts):
+        self.key = key
+        self.ts = ts
+    def bits(self):
+        if self.key is None:
+            return ''
+        else:
+            return struct.pack('l', self.key)
+    @staticmethod
+    def frombits(bits):
+        if bits == '':
+            return SeenRecordV1(None, None)
+        else:
+            key, = struct.unpack('l', bits)
+            return SeenRecord(key, 0)
+    @classmethod
+    def readfrom(cls, f):
+        bits = f.read(cls.RECSIZE)
+        if 0 < len(bits) < cls.RECSIZE:
+            logging.warn('invalid seenrec of length %d bytes', len(bits))
+            bits = ''
+        return cls.frombits(bits)
+
+FORMAT_ID = {
+    1: SeenRecordV1,
+    2: SeenRecord
+    }
+
 class SeenFile(object):
-    def __init__(self, fn, mode='rb'):
+    def __init__(self, fn, mode='rb', fmt=2):
         self.fn = fn
         self.mode = mode
         self.f = open(self.fn, self.mode)
         self.lastkeywritten = None
+        self.RECORD = FORMAT_ID[fmt]
     def __enter__(self):
         return self
     def __exit__(self, ext, exv, tb):
@@ -54,16 +87,82 @@ class SeenFile(object):
         return False
 
     def next(self):
-        return SeenRecord.readfrom(self.f)
+        return self.RECORD.readfrom(self.f)
 
+    def tell(self):
+        return self.f and self.f.tell()
     def write(self, r):
         if isinstance(r, tuple):
-            r = SeenRecord(*r)
+            r = self.RECORD(*r)
         if r.key is not None:
             self.f.write(r.bits())
             self.lastkeywritten = r.key
     
-        
+def check_seenfile(seenfn, fmt=2):
+    """check if keys are in order."""
+    reccount = 0
+    errorcount = 0
+    firstuid = None
+    lastuid = None
+    with SeenFile(seenfn, 'rb', fmt=fmt) as f:
+        while True:
+            pos = f.tell()
+            rec = f.next()
+            reccount += 1
+            uid = rec.key
+            if uid is None:
+                break
+            if firstuid is None: firstuid = uid
+            if lastuid is not None:
+                if uid < lastuid:
+                    print "out of order record: {} at {} after {}".format(
+                        uid, pos, lastuid)
+                    errorcount += 1
+                elif uid == lastuid:
+                    print "duplicate record {} at {}".format(uid, pos)
+                    errorcount += 1
+            lastuid = uid
+
+    print "{} records, {} errors".format(reccount, errorcount)
+    print "first {}, last {}".format(firstuid, lastuid)
+
+    return errorcount == 0
+
+def copy_seenfile(srcfn, dstfn, srcfmt=1, dstfmt=2):
+    print "reading {} in format {}, writing {} in format {}".format(
+        srcfn, srcfmt, dstfn, dstfmt)
+    reccount = 0
+    with SeenFile(srcfn, 'rb', fmt=srcfmt) as sf:
+        with SeenFile(dstfn, 'wb', fmt=dstfmt) as df:
+            while True:
+                rec = sf.next()
+                if rec.key is None:
+                    break
+                df.write(rec)
+                reccount += 1
+    print "copied {} records".format(reccount)
+
+# entry points for command line tools
+def main_check():
+    from optparse import OptionParser
+    opt = OptionParser('%prog [--fmt {1|2}] SEEN-FILE')
+    opt.add_option('--fmt', type='int', default=2)
+    options, args = opt.parse_args()
+    if len(args) < 1:
+        opt.error('specify SEEN-FILE to check')
+    seenfile = args[0]
+    exit(0 if check_seenfile(seenfile, options.fmt) else 1)
+
+def main_convert():
+    from optparse import OptionParser
+    opt = OptionParser('%prog V1-SEEN-FILE V2-SEEN-FILE')
+    options, args = opt.parse_args()
+    if len(args) < 2:
+        opt.error('specify V1-SEEN-FILE and V2-SEEN-FILE')
+    srcfn, dstfn = args[:2]
+    copy_seenfile(srcfn, 1, dstfn, 2)
+    exit(0)
+
 class MergeDispatcher(Dispatcher):
 
     def __init__(self, domaininfo, job, mapper, scheduler, inq,

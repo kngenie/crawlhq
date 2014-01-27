@@ -7,7 +7,7 @@ import random
 import subprocess
 import logging
 
-from mergedispatcher import MergeDispatcher, SeenFile
+from mergedispatcher import MergeDispatcher, SeenFile, copy_seenfile
 from fileinq import IncomingQueue
 
 logging.basicConfig(level=logging.DEBUG)
@@ -228,5 +228,19 @@ class MergeDispatcherTestCase(unittest.TestCase):
         assert len(missing) == 0, "missing {} URLs {}".format(
             len(missing), missing)
 
+    def testSeenConvert(self):
+        seenfile = os.path.join(self.dispatcher.seendir, 'SEEN')
+        with SeenFile(seenfile, 'wb', 1) as f1:
+            for uid in range(100):
+                f1.write((uid, 0))
+        copy_seenfile(seenfile, seenfile+'v2', 1, 2)
+        with SeenFile(seenfile+'v2', 'rb', 2) as f2:
+            for uid in range(100):
+                rec = f2.next()
+                assert rec.key == uid
+                assert rec.ts == 0
+            rec = f2.next()
+            assert rec.key is None
+            
 if __name__ == '__main__':
     unittest.main()

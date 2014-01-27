@@ -40,7 +40,9 @@ setup(
     entry_points={
         'console_scripts':[
             'shuffle = shuffle:main',
-            'processinq-sa = inqprocessor:main_standalone'
+            'processinq-sa = inqprocessor:main_standalone',
+            'mseencheck = mergedispatcher:main_check',
+            'mseenconvert = mergedispatcher:main_convert'
             ]
         },
     install_requires=[
