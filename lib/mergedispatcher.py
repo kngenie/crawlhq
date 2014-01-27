@@ -160,7 +160,7 @@ def main_convert():
     if len(args) < 2:
         opt.error('specify V1-SEEN-FILE and V2-SEEN-FILE')
     srcfn, dstfn = args[:2]
-    copy_seenfile(srcfn, 1, dstfn, 2)
+    copy_seenfile(srcfn, dstfn, 1, 2)
     exit(0)
 
 class MergeDispatcher(Dispatcher):
