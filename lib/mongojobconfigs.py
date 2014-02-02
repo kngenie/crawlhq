@@ -89,7 +89,8 @@ class JobConfigs(BaseJobConfigs):
                 jobs = json.loads(r.read())
                 self.currentversion = os.fstat(r.fileno()).st_mtime
             # TODO check validity
-            self.jobs = jobs
+            self.jobs = dict((name, JobConfig(self, job)) for name, job in
+                             jobs.items())
         except IOError, ex:
             if ex.errno in (os.errno.ENOTDIR, os.errno.ENOENT):
                 logging.debug('%s: %s', self.cachefn, str(ex))
