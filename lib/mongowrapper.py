@@ -17,7 +17,7 @@ class MongoDatabaseWrapper(object):
         if self.client is None:
             try:
                 self.client = pymongo.MongoClient(**self.connection_params)
-            except pymgono.errors.ConnectionFailure as ex:
+            except pymongo.errors.ConnectionFailure as ex:
                 self.fail_time = time.time()
                 self.client = None
                 raise
