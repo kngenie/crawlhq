@@ -24,7 +24,12 @@ def mongo():
 
 @singleton
 def configdb():
-    return mongo().crawl
+    #return mongo().crawl
+    import mongowrapper
+    mongoserver = hqconfig.get('mongo')
+    connection_params = dict(host=mongoserver)
+    logging.info('using MongoDB: %s', mongoserver)
+    return mongowrapper.MongoDatabaseWrapper(connection_params, 'crawl')
 
 @singleton
 def coordinator():

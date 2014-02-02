@@ -127,7 +127,7 @@ class DispatcherTestCase(unittest.TestCase):
 
         # print exclude qfile content
         subprocess.check_call(
-            'zcat %s/*.gz' % self.dispatcher.excludedlist.qdir,
+            'gzcat %s/*.gz' % self.dispatcher.excludedlist.qdir,
             shell=1)
 
         items = self.readqueue(self.dispatcher.excludedlist.qdir)
