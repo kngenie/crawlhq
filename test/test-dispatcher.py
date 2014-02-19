@@ -2,8 +2,7 @@
 # reasons (well, actually it's not testing LevelDB part of it. it uses
 # in-memory stub seen database.)
 
-from fixture import *
-import unittest
+from fixture import testdatadir, TestDomainInfo
 
 from dispatcher import *
 from leveldispatcher import LevelDispatcher
@@ -11,151 +10,159 @@ from filequeue import FileEnqueue
 
 from fixture.testseen import *
 
-class WorksetMapperTestCase(unittest.TestCase):
-    def setUp(self):
-        self.mapper = WorksetMapper(8)
-        
-    def testHosthash(self):
-        h1 = self.mapper.hosthash('http://www.archive.org/')
+import pytest
+import py.path
+import gzip
 
-        h2 = self.mapper.hosthash('http://archive.org/')
-        assert h1 == h2
+# tests for real WorksetMapper, not a fixture version defined below
+def testHosthash():
+    mapper = WorksetMapper(8)
 
-        h3 = self.mapper.hosthash('http://download.archive.org/')
-        assert h3 == h1
+    h1 = mapper.hosthash('http://www.archive.org/')
 
-        h4 = self.mapper.hosthash('http://www.yahoo.com/')
-        assert h4 != h1
+    h2 = mapper.hosthash('http://archive.org/')
+    assert h1 == h2
 
-    def testWorkset(self):
-        curi = dict(u='http://www.archive.org/')
-        ws1 = self.mapper.workset(curi)
-        assert 0 <= ws1 <= 255, '%s is not within 8 bits' % ws1
+    h3 = mapper.hosthash('http://download.archive.org/')
+    assert h3 == h1
 
-class DispatcherTestCase(unittest.TestCase):
-    class TestDomainInfo(object):
-        def __init__(self):
-            self.excluded=0
-        def get_byurl(self, url):
-            return dict(exclude=self.excluded)
-    class TestMapper(object):
-        nworksets = 10
-        worksetclient = [0]
-        _workset = 0
-        def workset(self, furi):
-            return self._workset
-    class TestScheduler(object):
-        def __init__(self):
-            self._client_active = True
-            self.curis = []
-        def is_active(self, clid):
-            return self._client_active
-        def flush_workset(self, wsid):
-            pass
-        def schedule(self, curi):
-            self.curis.append(curi)
+    h4 = mapper.hosthash('http://www.yahoo.com/')
+    assert h4 != h1
 
-    def setUp(self):
-        self.testdatadir = TestDatadir()
-        self.domaininfo = self.TestDomainInfo()
-        self.mapper = self.TestMapper()
-        self.scheduler = self.TestScheduler()
-        self.dispatcher = LevelDispatcher(self.domaininfo,
-                                     'wide', self.mapper, self.scheduler)
+def testWorkset():
+    mapper = WorksetMapper(8)
+    curi = dict(u='http://www.archive.org/')
+    ws1 = mapper.workset(curi)
+    assert 0 <= ws1 <= 255, '%s is not within 8 bits' % ws1
 
-        # plain FileEnqueue for passing CURL to Dispatcher
-        self.enq = FileEnqueue(self.testdatadir.inqdir('wide'))
+class TestMapper(object):
+    nworksets = 10
+    worksetclient = [0]
+    _workset = 0
+    def workset(self, furi):
+        return self._workset
+class TestScheduler(object):
+    def __init__(self):
+        self._client_active = True
+        self.curis = []
+    def is_active(self, clid):
+        return self._client_active
+    def flush_workset(self, wsid):
+        pass
+    def schedule(self, curi):
+        self.curis.append(curi)
 
-    def readqueue(self, qdir):
-        deq = FileDequeue(qdir)
-        items = []
-        while 1:
-            d = deq.get(0.01)
-            if d is None: break
-            items.append(d)
-        return items
+@pytest.fixture
+def domaininfo():
+    return TestDomainInfo()
+@pytest.fixture
+def mapper():
+    return TestMapper()
+@pytest.fixture
+def scheduler():
+    return TestScheduler()
 
-    def testRegular(self):
-        curi = dict(u='http://test.example.com/1')
-        self.enq.queue([curi])
-        self.enq.close()
+def readqueue(qdir):
+    deq = FileDequeue(qdir)
+    items = []
+    while 1:
+        d = deq.get(0.01)
+        if d is None: break
+        items.append(d)
+    return items
 
-        r = self.dispatcher.processinq(10)
+def testRegular(testdatadir, domaininfo, mapper, scheduler):
 
-        assert r['processed'] == 1, r
-        assert r['scheduled'] == 1, r
-        assert r['excluded'] == 0, r
-        assert r['saved'] == 0, r
+    dispatcher = LevelDispatcher(domaininfo, 'wide', mapper, scheduler)
 
-        assert len(self.scheduler.curis) == 1
-        assert self.scheduler.curis[0]['u'] == curi['u']
+    enq = FileEnqueue(testdatadir.inqdir('wide'))
 
-    def testSeen(self):
-        curi1 = dict(u='http://test.example.com/2')
-        self.dispatcher.init_seen()
-        self.dispatcher.seen.already_seen(curi1)
+    curi = dict(u='http://test.example.com/1')
+    enq.queue([curi])
+    enq.close()
 
-        self.enq.queue([curi1])
-        self.enq.close()
+    r = dispatcher.processinq(10)
 
-        #subprocess.call('zcat /tmp/hq/wide/inq/*.gz', shell=1)
+    assert r['processed'] == 1, r
+    assert r['scheduled'] == 1, r
+    assert r['excluded'] == 0, r
+    assert r['saved'] == 0, r
 
-        r = self.dispatcher.processinq(10)
+    assert len(scheduler.curis) == 1
+    assert scheduler.curis[0]['u'] == curi['u']
 
-        assert r['processed'] == 1, r
-        assert r['scheduled'] == 0, r
-        assert r['excluded'] == 0, r
-        assert r['saved'] == 0, r
+def testSeen(testdatadir, domaininfo, mapper, scheduler):
+    dispatcher = LevelDispatcher(domaininfo, 'wide', mapper, scheduler)
+    enq = FileEnqueue(testdatadir.inqdir('wide'))
 
-        assert len(self.scheduler.curis) == 0, self.scheduler.curis
+    curi1 = dict(u='http://test.example.com/2')
+    dispatcher.init_seen()
+    dispatcher.seen.already_seen(curi1)
 
-    def testExcluded(self):
-        curi = dict(u='http://test.example.com/3')
-        self.domaininfo.excluded = 1
+    enq.queue([curi1])
+    enq.close()
 
-        self.enq.queue([curi])
-        self.enq.close()
+    #subprocess.call('zcat /tmp/hq/wide/inq/*.gz', shell=1)
 
-        r = self.dispatcher.processinq(10)
+    r = dispatcher.processinq(10)
 
-        assert r['processed'] == 1, r
-        assert r['scheduled'] == 0, r
-        assert r['excluded'] == 1, r
-        assert r['saved'] == 0, r
+    assert r['processed'] == 1, r
+    assert r['scheduled'] == 0, r
+    assert r['excluded'] == 0, r
+    assert r['saved'] == 0, r
 
-        self.dispatcher.shutdown()
+    assert len(scheduler.curis) == 0, scheduler.curis
 
-        # print exclude qfile content
-        subprocess.check_call(
-            'gzcat %s/*.gz' % self.dispatcher.excludedlist.qdir,
-            shell=1)
+def testExcluded(testdatadir, domaininfo, mapper, scheduler):
+    dispatcher = LevelDispatcher(domaininfo, 'wide', mapper, scheduler)
+    enq = FileEnqueue(testdatadir.inqdir('wide'))
 
-        items = self.readqueue(self.dispatcher.excludedlist.qdir)
-        assert len(items) == 1, items
-        assert isinstance(items[0], dict), items[0]
-        assert items[0]['u'] == curi['u']
+    curi = dict(u='http://test.example.com/3')
+    domaininfo.excluded = 1
 
-    def testOutOfScope(self):
-        curi = dict(u='http://test.example.com/')
-        self.scheduler._client_active = False
+    enq.queue([curi])
+    enq.close()
 
-        self.enq.queue([curi])
-        self.enq.close()
+    r = dispatcher.processinq(10)
 
-        r = self.dispatcher.processinq(10)
+    assert r['processed'] == 1, r
+    assert r['scheduled'] == 0, r
+    assert r['excluded'] == 1, r
+    assert r['saved'] == 0, r
 
-        assert r['processed'] == 1, r
-        assert r['scheduled'] == 0, r
-        assert r['excluded'] == 0, r
-        assert r['saved'] == 1, r
+    dispatcher.shutdown()
 
-        self.dispatcher.shutdown()
+    # print exclude qfile content
+    for q in py.path.local(dispatcher.excludedlist.qdir).listdir(
+        fil=lambda p: p.ext == '.gz'):
+        with gzip.open(str(q)) as f:
+            print f.read()
 
-        items = self.readqueue(self.dispatcher.diverter.getqueue('0').qdir)
-        assert len(items) == 1, items
-        assert isinstance(items[0], dict), items[0]
-        assert items[0]['u'] == curi['u']
+    items = readqueue(dispatcher.excludedlist.qdir)
+    assert len(items) == 1, items
+    assert isinstance(items[0], dict), items[0]
+    assert items[0]['u'] == curi['u']
 
+def testOutOfScope(testdatadir, domaininfo, mapper, scheduler):
+    dispatcher = LevelDispatcher(domaininfo, 'wide', mapper, scheduler)
+    enq = FileEnqueue(testdatadir.inqdir('wide'))
 
-if __name__ == '__main__':
-    unittest.main()
+    curi = dict(u='http://test.example.com/')
+    scheduler._client_active = False
+
+    enq.queue([curi])
+    enq.close()
+
+    r = dispatcher.processinq(10)
+
+    assert r['processed'] == 1, r
+    assert r['scheduled'] == 0, r
+    assert r['excluded'] == 0, r
+    assert r['saved'] == 1, r
+
+    dispatcher.shutdown()
+
+    items = readqueue(dispatcher.diverter.getqueue('0').qdir)
+    assert len(items) == 1, items
+    assert isinstance(items[0], dict), items[0]
+    assert items[0]['u'] == curi['u']
