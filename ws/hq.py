@@ -44,7 +44,7 @@ class CrawlJob(object):
                                    self.mapper)
 
         readsorted = hqconfig.getint('inq.sort', 1)
-        
+
         inqdir = hqconfig.inqdir(self.jobname)
 
         def enqfactory(qdir, **kwargs):
@@ -60,7 +60,7 @@ class CrawlJob(object):
         # self.eninq = PriorityEnqueue(
         #     qdir=hqconfig.inqdir(self.jobname),
         #     buffer=1000)
-        
+
         # deinqargs = {}
         # if readsorted:
         #     deinqargs['reader'] = FPSortingQueueFileReader
@@ -69,7 +69,7 @@ class CrawlJob(object):
 
         self._dispatcher_mode = hqconfig.get(
             ('jobs', self.jobname, 'dispatcher'), 'internal')
-                                            
+
         self.dispatcher = None
         #self.init_dispatcher()
 
@@ -105,7 +105,7 @@ class CrawlJob(object):
                                           scheduler=self.scheduler,
                                           inq=self.inq.deq)
         return self.dispatcher
-        
+
     def shutdown_dispatcher(self):
         if not self.dispatcher: return
         logging.info("shutting down dispatcher")
@@ -133,7 +133,7 @@ class CrawlJob(object):
             r['sch'] = id(self.scheduler)
             r['worksets'] = self.scheduler.get_workset_status()
         return r
-        
+
     def workset_activating(self, *args):
         self.init_dispatcher().workset_activating(*args)
 
@@ -317,7 +317,7 @@ class ClientAPI(QueryApp, DiscoveredHandler):
         result['t'] = time.time() - start
         logging.debug("finished %s", result)
         return result
-            
+
     def do_processinq(self, job):
         '''process incoming queue. max parameter advise upper limit on
         number of URIs processed. actually processed URIs may exceed that
@@ -474,16 +474,23 @@ class ClientAPI(QueryApp, DiscoveredHandler):
         clid = job.mapper.clientforwsid(ws)
 
         return dict(success=1, u=u, ws=ws, client=clid)
-        
+
 def setuplogging(level=logging.INFO, filename='hq.log'):
-    logsdir = os.path.join(hqconfig.get('datadir'), 'logs')
-    if not os.path.isdir(logsdir): os.makedirs(logsdir)
-    logging.basicConfig(
-        filename=os.path.join(logsdir, filename),
+    logconfig = dict(
         level=level,
         format='%(asctime)s %(levelname)s %(name)s %(message)s',
-        datefmt='%F %T')
-    
+        datefmt='%F %T'
+    )
+    logsdir = os.path.join(hqconfig.get('datadir'), 'logs')
+    if not os.path.isdir(logsdir):
+        try:
+            os.makedirs(logsdir)
+            logcnfig['filename'] = os.path.join(logsdir, filename)
+        except OSError as ex:
+            print >>sys.stderr, "failed to create logging directory {} ({})".format(
+                logsdir, ex)
+    logging.basicConfig(**logconfig)
+
 urls = (
     '/(.*)/(.*)', 'ClientAPI',
     )
