@@ -1,10 +1,30 @@
-# HQ configuration
+"""
+HQ configuration support.
+
+configuration parameters are loaded with :module:`ConfigObj` from
+ini-file style configuration file ``hq.conf`` in a directory where
+HQ is deployed (detected by heuristics)
+
+Configuration parameters can be accessed with :func:`get`:
+
+    import hqconfig
+
+    some_path = hqconfig.get("some_path")
+
+Module also defines dedicated functions for commonly-used parameters:
+
+* ``inqdir``
+* ``seendir``
+* ``worksetdir``
+* ``cachedir``
+"""
 import os
 from configobj import ConfigObj
 
-# HQ installation directory
-# assuming hqconfig.py is under HQHOME/lib or HQHOME/local/lib
 def _find_home():
+    """Deduce HQ installation directory.
+    This assumes hqconfig.py is under ``HQHOME/lib`` or ``HQHOME/local/lib``.
+    """
     d = os.path.dirname(__file__)
     while not d.endswith('/lib'):
         d = os.path.dirname(d)
@@ -72,6 +92,13 @@ def mergeconfig(config):
     configobj().merge(config)
 
 def get(p, dv=None, type=None):
+    """Return configuration parameter named ``p`` as type `type`
+
+    :param p: configuration parameter name
+    :param dv: default value if `p` is undefined
+    :param type: a function coverting parameter value \
+    (not applied to `dv`)
+    """
     if isinstance(p, basestring):
         p = p.split('.')
     if isinstance(p, (list, tuple)):
@@ -89,14 +116,26 @@ def get(p, dv=None, type=None):
     raise KeyError, 'bad key: %s' % p
 
 def getint(p, dv=None):
+    """Return configuration parameter named `p` as int
+
+    :param p: parameter name
+    :param dv: default value
+    :type dv: int
+    """
     return get(p, dv, type=int)
 def getfloat(p, dv=None):
+    """Return configuration parameter named `p` as int
+
+    :param p: parameter name
+    :param dv: default value
+    :type dv: float
+    """
     return get(p, dv, type=float)
 
 import factory
 factory_script = os.path.join(confdir(), 'factory.py')
 if os.path.isfile(factory_script):
     execfile(factory_script, globals(), factory)
-        
+
 # def __getitem__(p):
 #     return configobj().get(p, None)

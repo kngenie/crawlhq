@@ -1,5 +1,10 @@
 """
 Dispatcher using sort-merge for seen-check.
+
+This veriant of Dispatcher stores seen table in a single binary file
+consisting of fixed-length records, sorted by `key` (Rabin Fingerprint of
+URL). Seen check is done by taking a bulk of input keys and performing
+sort-merge oepration with existing seen table.
 """
 import sys
 import os
@@ -15,18 +20,38 @@ import hqconfig
 from dispatcher import *
 
 class SeenRecord(object):
+    """object for version-2 (with 4-byte time) seen database record.
+    """
     RECSIZE = 12
     def __init__(self, key, ts):
+        """initialize all attributes.
+
+        :param key: 64-bit fingerprint.
+        :type key: int
+        :param ts: 32-bit time (in seconds) this seen record expires.
+        :type ts: int
+        """
         self.key = key
         assert self.key is None or isinstance(self.key, (int, long))
         self.ts = ts
     def bits(self):
+        """return binary representation of this record.
+
+        :rtype: str
+        """
         if self.key is None:
             return ''
         else:
             return struct.pack('lI', self.key, self.ts or 0)
     @staticmethod
     def frombits(bits):
+        """create SeenRecord from binary representation.
+        if `bits` is an empty str, returns SeenRecord with
+        all attributes set to ``None``.
+
+        :param bits: binary representation
+        :type bits: str
+        """
         if bits == '':
             return SeenRecord(None, None)
         else:
@@ -34,6 +59,13 @@ class SeenRecord(object):
             return SeenRecord(key, ts)
     @classmethod
     def readfrom(cls, f):
+        """Read bits for one SeenRecord from `f`, and return
+        SeenRecord object. At EOF, returns SeenRecord with
+        all attributes set to ``None``.
+
+        :param f: file-like to read bits from.
+        :rtype: :class:`SeenRecord`
+        """
         bits = f.read(cls.RECSIZE)
         if 0 < len(bits) < cls.RECSIZE:
             logging.warn('invalid seenrec of length %d bytes', len(bits))
@@ -41,7 +73,9 @@ class SeenRecord(object):
         return cls.frombits(bits)
 
 class SeenRecordV1(object):
-    """older format of seen record. that has URL hash key only."""
+    """older format of seen record. that has URL hash key only.
+    defined primarily for seen-table conversion tools.
+    """
     RECSIZE = 8
     def __init__(self, key, ts):
         self.key = key
@@ -72,7 +106,18 @@ FORMAT_ID = {
     }
 
 class SeenFile(object):
+    """representation of seen-table.
+    binary file consisting of fixed-length record.
+    this class can read/write either of two formats.
+    object may be passed to ``with`` statement for automatic closure.
+    """
     def __init__(self, fn, mode='rb', fmt=2):
+        """
+        :param fn: filename
+        :param mode: open mode. use ``"wb"`` for writing.
+        :param fmt: format ID. either 1 or 2. \
+        other values will reslutl in :exc:`KeyError`.
+        """
         self.fn = fn
         self.mode = mode
         self.f = open(self.fn, self.mode)
@@ -87,17 +132,28 @@ class SeenFile(object):
         return False
 
     def next(self):
+        """return next record.
+
+        :rtype: either :class:`SeenRecord` or :class:`SeenRecordV1`
+        """
         return self.RECORD.readfrom(self.f)
 
     def tell(self):
+        """return file pointer if file is open. return `None` otherwise.
+        """
         return self.f and self.f.tell()
     def write(self, r):
+        """write record `r` to file.
+        it is legal to pass a record object of different version.
+
+        :param r: record object
+        """
         if isinstance(r, tuple):
             r = self.RECORD(*r)
         if r.key is not None:
             self.f.write(r.bits())
             self.lastkeywritten = r.key
-    
+
 def check_seenfile(seenfn, fmt=2):
     """check if keys are in order."""
     reccount = 0
@@ -167,6 +223,20 @@ class MergeDispatcher(Dispatcher):
 
     def __init__(self, domaininfo, job, mapper, scheduler, inq,
                  maxsize=int(2e9)):
+        """Dispatcher that performs seen check by merging sorted
+        cURL records against fixed-size records of URL-IDs.
+
+        This version can resume processing previously terminated by
+        system crash etc. without double scheduling.
+
+        :param domaininfo:
+        :param job: crawl job name
+        :type job: str
+        :param mapper: workset mapper
+        :param scheduler: workset scheduler
+        :param inq: incoming queue
+        :param maxsize: max size of input for a batch
+        """
         # TODO: currently Dispatcher.__init__() initializes seenfactory,
         # which is not necessary for MergeDispatcher.
         #super(MergeDispatcher, self).__init__(domaininfo, job, mapper,
@@ -195,7 +265,7 @@ class MergeDispatcher(Dispatcher):
         logging.info("shutting down excludedlist")
         self.excludedlist.shutdown()
         logging.info("done.")
-        
+
     def clear_seen(self):
         pass
 
@@ -243,8 +313,20 @@ class MergeDispatcher(Dispatcher):
                                      incdelfile, l)
             logging.debug('replayed %s entries from %s', incdelcount,
                           incdelfile)
-        
+
     def _build_incoming(self, incomingfile, result):
+        """collect big-enough number of incomign cURLs (from multiple
+        incoming queues), excluding those for *no-crawl* domains and
+        offline queues, and save them in single queue file ``INCOMING``
+        in ``mseen``.
+        ``processed``, ``saved`` and ``excluded`` counters in `result`
+        will be updated.
+
+        :param incomingfile: queuefile for storing cURLs \
+        (typically ``mseen/INCOMING``)
+        :param result: counters
+        :type result: dict
+        """
         deq = self.inq.deq
         index = []
         with open(incomingfile, 'w') as w:
@@ -287,7 +369,10 @@ class MergeDispatcher(Dispatcher):
                 logging.warn('failed to delete file %r (%s)', fn, ex)
 
     def processinq(self, maxn):
-        """maxn is unused."""
+        """main procedure for inqueue processing.
+
+        :param maxn: unused
+        """
         result = dict(processed=0, excluded=0, saved=0, scheduled=0,
                       td=0.0, ts=0.0)
 
