@@ -21,6 +21,12 @@ typedef long long KEY;
 // this works until year 2106 (while 32bit time_t = int works until 2038).
 typedef unsigned int TS;
 
+// just to make compile pass (not verified)
+#ifdef __APPLE__
+#define lseek64 lseek
+typedef off_t off64_t;
+#endif
+
 #pragma pack(push, 4)
 struct RECORD {
   KEY key;
@@ -30,7 +36,7 @@ struct RECORD {
     ts = other.ts;
   }
   bool operator<(RECORD &other) {
-    return key < other.key || key == other.key && ts > other.ts;
+    return key < other.key || (key == other.key && ts > other.ts);
   }
   bool operator==(RECORD &other) {
     return key == other.key && ts == other.ts;
@@ -158,7 +164,7 @@ mode_t seenfileMode = (S_IRUSR|S_IWUSR|S_IRGRP|S_IROTH);
 int compareRecords(const void *a, const void *b) {
   return RECORD::compare(*(RECORD *)a, *(RECORD *)b);
 }
-  
+
 // old code
 int compareInt64(const void *a, const void *b) {
   KEY va = *(KEY *)a;
@@ -169,7 +175,7 @@ int compareInt64(const void *a, const void *b) {
 int main(int argc, char *argv[]) {
   const char *optstring = "";
   char optc;
-  while (optc = getopt_long(argc, argv, optstring, options, NULL) != -1) {
+  while ((optc = getopt_long(argc, argv, optstring, options, NULL)) != -1) {
     switch (optc) {
     case 'r':
       maxRecordCount = atoi(optarg);
@@ -179,7 +185,7 @@ int main(int argc, char *argv[]) {
       exit(1);
     }
   }
-  
+
   if (optind >= argc) {
     usage_and_exit();
   }
@@ -252,7 +258,7 @@ int main(int argc, char *argv[]) {
   // 2. merge sorted blocks.
   cerr << "merging " << blocks << " blocks" << endl;
   MergeSource **sources = new MergeSource *[blocks];
-  
+
   blockStart = 0;
   for (int i = 0; i < blocks; i++) {
     off64_t bound = blockStart + (maxRecordCount * recordSize);
@@ -269,13 +275,13 @@ int main(int argc, char *argv[]) {
       }
     }
   }
-  
+
   int outfd = open(outfile, O_WRONLY|O_CREAT|O_EXCL, seenfileMode);
   if (outfd < 0) {
     cerr << "failed to open " << outfile << " for writing" << endl;
     exit(1);
   }
-  
+
   while (sources[0]->active()) {
     KEY key = sources[0]->copyrecord(outfd);
     // move sources[0] to right position in the list.
@@ -308,7 +314,3 @@ int main(int argc, char *argv[]) {
 	 << strerror(errno) << endl;
   }
 }
-
-    
-  
-				 
